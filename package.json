@@ -1,0 +1,55 @@
+{
+  "name": "ai-plan",
+  "displayName": "AI Plan",
+  "description": "Generate implementation plans from recent tickets using AI",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:ai-plan.generateFromRecent"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ai-plan.generateFromRecent",
+        "title": "Generate Plan from Recent Tickets",
+        "category": "AI Plan"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "ai-plan.generateFromRecent",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "ignore": "^5.3.0",
+    "@slack/web-api": "^6.10.0",
+    "@octokit/rest": "^20.0.0"
+  }
+}
