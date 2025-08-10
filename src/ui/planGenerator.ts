@@ -2,12 +2,15 @@ import * as vscode from 'vscode';
 import { RecentTicket, LLMResponse } from '../types';
 import { OllamaProvider } from '../llm/ollama';
 import { ContextBuilder } from '../contextBuilder';
+import { StreamingPanel } from './streamingPanel';
 
 export class PlanGenerator {
   private contextBuilder: ContextBuilder;
+  private outputChannel: vscode.OutputChannel;
 
   constructor() {
     this.contextBuilder = new ContextBuilder();
+    this.outputChannel = vscode.window.createOutputChannel('AI Plan');
   }
 
   async generatePlan(ticket: RecentTicket): Promise<void> {
@@ -33,13 +36,12 @@ export class PlanGenerator {
         // Format prompt
         const prompt = this.formatPrompt(ticket, context);
         
-        // Generate plan
-        const response = await ollamaProvider.generatePlan(prompt);
-        
-        progress.report({ message: 'Displaying plan...' });
-        
-        // Display the plan
-        await this.displayPlan(ticket, response.content);
+        // Stream plan into a webview panel styled like a chat window
+        await this.displayStreaming(ticket, async (append) => {
+          await ollamaProvider.streamGeneratePlan(prompt, (token) => {
+            append(token);
+          });
+        });
       });
 
     } catch (error) {
@@ -133,5 +135,16 @@ ${planContent}
     }
     
     return null;
+  }
+
+  private async displayStreaming(
+    ticket: RecentTicket,
+    runStream: (append: (chunk: string) => void) => Promise<void>
+  ): Promise<void> {
+    const panel = new StreamingPanel('AI Plan (Streaming)');
+    panel.setHeader(`Generating plan for ${ticket.key} - ${ticket.summary}`);
+
+    await runStream((chunk) => panel.appendToken(chunk));
+    panel.finish();
   }
 }

@@ -9,9 +9,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:ai-plan.generateFromRecent"
-  ],
+  "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -19,12 +17,31 @@
         "command": "ai-plan.generateFromRecent",
         "title": "Generate Plan from Recent Tickets",
         "category": "AI Plan"
+      },
+      {
+        "command": "ai-plan.generateFromRecentStreaming",
+        "title": "Generate Plan from Recent Tickets (Streaming)",
+        "category": "AI Plan"
+      },
+      {
+        "command": "ai-plan.configure",
+        "title": "AI Plan: Configure",
+        "category": "AI Plan"
+      },
+      {
+        "command": "ai-plan.settings",
+        "title": "AI Plan: Settings",
+        "category": "AI Plan"
       }
     ],
     "menus": {
       "explorer/context": [
         {
           "command": "ai-plan.generateFromRecent",
+          "group": "navigation"
+        },
+        {
+          "command": "ai-plan.generateFromRecentStreaming",
           "group": "navigation"
         }
       ]

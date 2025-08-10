@@ -1,9 +1,12 @@
 import * as vscode from 'vscode';
 import { RecentTicketsPicker } from './ui/recentTicketsPicker';
 import { PlanGenerator } from './ui/planGenerator';
+import { setExtensionContext } from './context';
+import { SettingsPanel } from './ui/settingsPanel';
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('AI Plan extension is now active!');
+  setExtensionContext(context);
 
   // Register the main command
   const disposable = vscode.commands.registerCommand('ai-plan.generateFromRecent', async () => {
@@ -23,12 +26,41 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(disposable);
 
+  // Register a streaming variant that writes into Output Channel
+  const streamingDisposable = vscode.commands.registerCommand('ai-plan.generateFromRecentStreaming', async () => {
+    try {
+      const picker = new RecentTicketsPicker();
+      const ticket = await picker.showRecentTickets();
+      
+      if (ticket) {
+        const generator = new PlanGenerator();
+        await generator.generatePlan(ticket);
+      }
+    } catch (error) {
+      console.error('Error in generateFromRecentStreaming command:', error);
+      await vscode.window.showErrorMessage('Failed to generate plan (streaming). Please check your configuration.');
+    }
+  });
+
+  context.subscriptions.push(streamingDisposable);
+
   // Register configuration command
   const configDisposable = vscode.commands.registerCommand('ai-plan.configure', async () => {
     await configureExtension(context);
   });
 
   context.subscriptions.push(configDisposable);
+
+  const settingsDisposable = vscode.commands.registerCommand('ai-plan.settings', async () => {
+    try {
+      new SettingsPanel();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      await vscode.window.showErrorMessage('Failed to open settings: ' + message);
+    }
+  });
+
+  context.subscriptions.push(settingsDisposable);
 
   // Check if configuration is needed
   checkConfiguration(context);

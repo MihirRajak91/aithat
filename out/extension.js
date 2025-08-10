@@ -38,8 +38,11 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const recentTicketsPicker_1 = require("./ui/recentTicketsPicker");
 const planGenerator_1 = require("./ui/planGenerator");
+const context_1 = require("./context");
+const settingsPanel_1 = require("./ui/settingsPanel");
 function activate(context) {
     console.log('AI Plan extension is now active!');
+    (0, context_1.setExtensionContext)(context);
     // Register the main command
     const disposable = vscode.commands.registerCommand('ai-plan.generateFromRecent', async () => {
         try {
@@ -56,11 +59,37 @@ function activate(context) {
         }
     });
     context.subscriptions.push(disposable);
+    // Register a streaming variant that writes into Output Channel
+    const streamingDisposable = vscode.commands.registerCommand('ai-plan.generateFromRecentStreaming', async () => {
+        try {
+            const picker = new recentTicketsPicker_1.RecentTicketsPicker();
+            const ticket = await picker.showRecentTickets();
+            if (ticket) {
+                const generator = new planGenerator_1.PlanGenerator();
+                await generator.generatePlan(ticket);
+            }
+        }
+        catch (error) {
+            console.error('Error in generateFromRecentStreaming command:', error);
+            await vscode.window.showErrorMessage('Failed to generate plan (streaming). Please check your configuration.');
+        }
+    });
+    context.subscriptions.push(streamingDisposable);
     // Register configuration command
     const configDisposable = vscode.commands.registerCommand('ai-plan.configure', async () => {
         await configureExtension(context);
     });
     context.subscriptions.push(configDisposable);
+    const settingsDisposable = vscode.commands.registerCommand('ai-plan.settings', async () => {
+        try {
+            new settingsPanel_1.SettingsPanel();
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            await vscode.window.showErrorMessage('Failed to open settings: ' + message);
+        }
+    });
+    context.subscriptions.push(settingsDisposable);
     // Check if configuration is needed
     checkConfiguration(context);
 }
