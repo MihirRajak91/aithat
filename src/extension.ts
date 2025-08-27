@@ -5,9 +5,16 @@ import { setExtensionContext } from './context';
 import { SettingsPanel } from './ui/settingsPanel';
 import { feedbackSystem } from './ui/feedbackSystem';
 import { errorHandler } from './ui/errorHandler';
+import { loadDotenv } from './config/dotenv-loader';
+import { getMaskedConfig } from './config/environment';
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('AI Plan extension is now active!');
+  
+  // Load environment variables from .env file
+  loadDotenv(context.extensionPath);
+  console.log('Environment configuration:', getMaskedConfig());
+  
   setExtensionContext(context);
 
   // Register the main command with enhanced UI
