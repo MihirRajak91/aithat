@@ -77,7 +77,7 @@ export class OllamaProvider extends BaseLLM {
           // Ollama streams NDJSON lines: { response: "...", done: bool, ... }
           for (const line of text.split(/\r?\n/)) {
             const trimmed = line.trim();
-            if (!trimmed) continue;
+            if (!trimmed) {continue;}
             try {
               const obj = JSON.parse(trimmed);
               if (obj.response) {

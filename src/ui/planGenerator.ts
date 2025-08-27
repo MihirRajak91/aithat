@@ -34,7 +34,7 @@ export class PlanGenerator {
         });
         
         // Format prompt
-        const prompt = this.formatPrompt(ticket, context);
+        const prompt = this.formatEnhancedPrompt(ticket, context);
         
         // Stream plan into a webview panel styled like a chat window
         await this.displayStreaming(ticket, async (append) => {
@@ -51,14 +51,43 @@ export class PlanGenerator {
     }
   }
 
-  private formatPrompt(ticket: RecentTicket, context: string): string {
-    return `Ticket: ${ticket.key} – ${ticket.summary}
-${ticket.description}
----  
-Workspace context:
+  private formatEnhancedPrompt(ticket: RecentTicket, context: string): string {
+    return `# Implementation Plan Request
+
+## Ticket Information
+**Key:** ${ticket.key}
+**Title:** ${ticket.summary}
+**Priority:** ${ticket.priority}
+**Status:** ${ticket.status}
+**Provider:** ${ticket.provider}
+
+**Description:**
+${ticket.description || 'No description provided'}
+
+**Labels:** ${ticket.labels.length > 0 ? ticket.labels.join(', ') : 'None'}
+
+---
+
+## Workspace Context
 ${context}
----  
-Return a concise, numbered checklist to implement this ticket. Include specific steps, file modifications, and any new files that need to be created.`;
+
+---
+
+## Instructions
+Generate a comprehensive, well-structured implementation plan for this ticket. Include:
+
+1. **Overview** - Brief summary of what needs to be implemented
+2. **Technical Analysis** - Key technical considerations and dependencies
+3. **Implementation Steps** - Detailed, numbered checklist with:
+   - Specific files to create or modify
+   - Code changes required
+   - Configuration updates
+   - Database changes (if applicable)
+4. **Testing Strategy** - How to test the implementation
+5. **Deployment Notes** - Any deployment considerations
+6. **Potential Risks** - What could go wrong and how to mitigate
+
+Format the response in clear, actionable Markdown with proper headings, code blocks, and bullet points. Be specific about file paths, function names, and implementation details based on the workspace context provided.`;
   }
 
   private async displayPlan(ticket: RecentTicket, planContent: string): Promise<void> {

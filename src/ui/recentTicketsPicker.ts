@@ -1,23 +1,32 @@
 import * as vscode from 'vscode';
 import { getExtensionContext } from '../context';
-import { RecentTicket } from '../types';
+import { RecentTicket, TaskGroup, ProjectGroup } from '../types';
 import { JiraProvider } from '../providers/jira';
+import { SlackProvider } from '../providers/slack';
 import { BaseProvider } from '../providers/base';
+import { feedbackSystem } from './feedbackSystem';
 
 export class RecentTicketsPicker {
   private providers: BaseProvider[] = [];
+  private jiraProvider: JiraProvider | null = null;
+  private slackProvider: SlackProvider | null = null;
 
   constructor() {
-    // Initialize providers (we'll start with Jira)
+    // Initialize providers (Jira and Slack)
     this.initializeProviders();
   }
 
   private async initializeProviders(): Promise<void> {
-    // For now, we'll hardcode Jira provider
-    // In the future, this will be configurable
     const jiraConfig = await this.getJiraConfig();
     if (jiraConfig) {
-      this.providers.push(new JiraProvider(jiraConfig));
+      this.jiraProvider = new JiraProvider(jiraConfig);
+      this.providers.push(this.jiraProvider);
+    }
+
+    const slackConfig = await this.getSlackConfig();
+    if (slackConfig) {
+      this.slackProvider = new SlackProvider(slackConfig);
+      this.providers.push(this.slackProvider);
     }
   }
 
@@ -37,10 +46,282 @@ export class RecentTicketsPicker {
     return null;
   }
 
+  private async getSlackConfig(): Promise<{ token: string } | null> {
+    const context = getExtensionContext();
+    if (!context) {
+      return null;
+    }
+
+    const token = await context.secrets.get('slack.token');
+
+    if (token) {
+      return { token };
+    }
+
+    return null;
+  }
+
   async showRecentTickets(): Promise<RecentTicket | null> {
     try {
-      let limit = 10;
+      // Use enhanced UI flow
+      return await this.showEnhancedTaskSelection();
+    } catch (error) {
+      console.error('Error in showRecentTickets:', error);
+      // Fallback to legacy flow
+      return await this.showLegacyTaskSelection();
+    }
+  }
+
+  private async showEnhancedTaskSelection(): Promise<RecentTicket | null> {
+    if (!this.jiraProvider && !this.slackProvider) {
+      throw new Error('No providers initialized. Please configure Jira or Slack.');
+    }
+
+    return await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: '🎯 AI Plan - Loading your tasks',
+      cancellable: true
+    }, async (progress, token) => {
+      
       while (true) {
+        if (token.isCancellationRequested) {
+          return null;
+        }
+
+        progress.report({ message: 'Analyzing your workload...', increment: 20 });
+
+        // Get task groups from available providers
+        const taskGroups: TaskGroup[] = [];
+        if (this.jiraProvider) {
+          const jiraGroups = await this.jiraProvider.getMyActiveWorkItems(50);
+          taskGroups.push(...jiraGroups);
+        }
+        
+        progress.report({ message: 'Organizing tasks by priority and status...', increment: 40 });
+
+        // Create main menu items
+        type MenuItem = vscode.QuickPickItem & { 
+          action: string;
+          data?: any;
+          ticket?: RecentTicket;
+          group?: TaskGroup;
+          kind?: vscode.QuickPickItemKind;
+        };
+
+        const menuItems: MenuItem[] = [];
+
+        // Quick access section
+        menuItems.push({ 
+          label: '🚀 Quick Access', 
+          action: 'separator', 
+          kind: vscode.QuickPickItemKind.Separator 
+        });
+
+        // Add urgent tasks if any
+        const urgentTasks = taskGroups.find(g => g.title.includes('High Priority'));
+        if (urgentTasks && urgentTasks.count > 0) {
+          menuItems.push({
+            label: `🔥 High Priority Tasks (${urgentTasks.count})`,
+            description: 'Your most important tasks requiring immediate attention',
+            action: 'show_group',
+            group: urgentTasks
+          });
+        }
+
+        // Add in-progress tasks
+        const inProgressTasks = taskGroups.find(g => g.title.includes('In Progress'));
+        if (inProgressTasks && inProgressTasks.count > 0) {
+          menuItems.push({
+            label: `⚡ Continue Work (${inProgressTasks.count})`,
+            description: 'Tasks you\'re currently working on',
+            action: 'show_group', 
+            group: inProgressTasks
+          });
+        }
+
+        // Add ready to start tasks
+        const readyTasks = taskGroups.find(g => g.title.includes('Ready to Start'));
+        if (readyTasks && readyTasks.count > 0) {
+          menuItems.push({
+            label: `📋 Ready to Start (${readyTasks.count})`,
+            description: 'Tasks ready for implementation',
+            action: 'show_group',
+            group: readyTasks
+          });
+        }
+
+        // Browse section
+        menuItems.push({ 
+          label: '📁 Browse by Project', 
+          action: 'separator', 
+          kind: vscode.QuickPickItemKind.Separator 
+        });
+
+        menuItems.push({
+          label: '💼 Browse by Project/Board',
+          description: 'Organize tasks by project or Jira board',
+          action: 'browse_projects'
+        });
+
+        if (this.jiraProvider) {
+          menuItems.push({
+            label: '🏃 Active Sprint Tasks',
+            description: 'View tasks from your current sprints',
+            action: 'sprint_tasks'
+          });
+        }
+
+        if (this.slackProvider) {
+          menuItems.push({
+            label: '💬 Slack Task Channels',
+            description: 'Browse tasks from Slack channels',
+            action: 'slack_channels'
+          });
+
+          menuItems.push({
+            label: '🧵 My Slack Mentions',
+            description: 'Tasks and discussions where you were mentioned',
+            action: 'slack_mentions'
+          });
+        }
+
+        // Advanced options
+        menuItems.push({ 
+          label: '🔧 Advanced Options', 
+          action: 'separator', 
+          kind: vscode.QuickPickItemKind.Separator 
+        });
+
+        menuItems.push({
+          label: '📊 All My Tasks',
+          description: 'View all your assigned tasks',
+          action: 'all_tasks'
+        });
+
+        menuItems.push({
+          label: '📅 Recently Updated',
+          description: 'Tasks updated in the last week',
+          action: 'recent_updated'
+        });
+
+        menuItems.push({
+          label: '🔍 Search Tasks',
+          description: 'Search by key, text, or advanced filters', 
+          action: 'search'
+        });
+
+        if (this.slackProvider) {
+          menuItems.push({
+            label: '🔥 High Priority Slack Tasks',
+            description: 'Urgent tasks and discussions from Slack',
+            action: 'slack_high_priority'
+          });
+        }
+
+        menuItems.push({
+          label: '🔄 Refresh Cache',
+          description: 'Reload tasks with fresh data',
+          action: 'refresh'
+        });
+
+        menuItems.push({
+          label: '⚙️ Settings',
+          description: 'Configure Jira connection and preferences',
+          action: 'settings'
+        });
+
+        progress.report({ message: 'Ready!', increment: 100 });
+
+        // Show the main menu
+        const selectedItem = await vscode.window.showQuickPick(menuItems, {
+          title: '🤖 AI Plan - Select Your Task',
+          placeHolder: taskGroups.length > 0 
+            ? `Choose from ${taskGroups.reduce((sum, g) => sum + g.count, 0)} available tasks`
+            : '🔍 No active tasks found. Try searching or refresh your data.',
+          matchOnDescription: true,
+          ignoreFocusOut: false
+        });
+
+        if (!selectedItem) {
+          return null;
+        }
+
+        // Handle the selected action
+        switch (selectedItem.action) {
+        case 'show_group':
+          if (selectedItem.group) {
+            const task = await this.showTaskGroup(selectedItem.group);
+            if (task) {return task;}
+          }
+          continue;
+
+        case 'browse_projects':
+          const projectTask = await this.showProjectBrowser();
+          if (projectTask) {return projectTask;}
+          continue;
+
+        case 'sprint_tasks':
+          const sprintTask = await this.showSprintTasks();
+          if (sprintTask) {return sprintTask;}
+          continue;
+
+        case 'all_tasks':
+          const allTask = await this.showAllTasks();
+          if (allTask) {return allTask;}
+          continue;
+
+        case 'recent_updated':
+          const recentTask = await this.showRecentlyUpdated();
+          if (recentTask) {return recentTask;}
+          continue;
+
+        case 'search':
+          const searchTask = await this.showTaskSearch();
+          if (searchTask) {return searchTask;}
+          continue;
+
+        case 'refresh':
+          if (this.jiraProvider) {
+            this.jiraProvider.clearCache();
+          }
+          if (this.slackProvider) {
+            this.slackProvider.clearCache();
+          }
+          feedbackSystem.showStatusBarMessage('🔄 Refreshed task data', 'success', 2000);
+          continue;
+
+        case 'slack_channels':
+          const slackChannelTask = await this.showSlackChannels();
+          if (slackChannelTask) {return slackChannelTask;}
+          continue;
+
+        case 'slack_mentions':
+          const slackMentionTask = await this.showSlackMentions();
+          if (slackMentionTask) {return slackMentionTask;}
+          continue;
+
+        case 'slack_high_priority':
+          const slackHighPriorityTask = await this.showSlackHighPriority();
+          if (slackHighPriorityTask) {return slackHighPriorityTask;}
+          continue;
+
+        case 'settings':
+          await vscode.commands.executeCommand('ai-plan.settings');
+          continue;
+
+        default:
+          continue;
+        }
+      }
+    });
+  }
+
+  private async showLegacyTaskSelection(): Promise<RecentTicket | null> {
+    try {
+      let limit = 15;
+      
+      while (true) {
+          
         const allTickets: RecentTicket[] = [];
         for (const provider of this.providers) {
           try {
@@ -49,7 +330,7 @@ export class RecentTicketsPicker {
             const recent = await provider.getRecentTickets(limit);
             const merged = [...assigned, ...recent];
             const dedup = new Map<string, RecentTicket>();
-            for (const t of merged) dedup.set(t.id, t);
+            for (const t of merged) {dedup.set(t.id, t);}
             allTickets.push(...dedup.values());
           } catch (error) {
             console.error(`Error fetching tickets from ${provider.getProviderName()}:`, error);
@@ -58,121 +339,192 @@ export class RecentTicketsPicker {
 
         allTickets.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 
-        type Item = vscode.QuickPickItem & { ticket?: RecentTicket; command?: 'search' | 'searchText' | 'browseBoards' | 'loadMore' | 'openSettings' };
 
-        const actionItems: Item[] = [
-          { label: '$(search) Search by key or ID...', description: 'Find an issue by exact key/ID', command: 'search' },
-          { label: '$(filter) Search by text...', description: 'Search issues by summary/description text', command: 'searchText' },
-          { label: '$(symbol-color) Browse boards assigned to me...', description: 'Select a board and list issues assigned to you', command: 'browseBoards' },
-          { label: '$(list-unordered) Load more', description: `Increase list size (currently ${limit})`, command: 'loadMore' },
-          { label: '$(gear) Open Settings', description: 'Configure Jira base URL and token', command: 'openSettings' }
-        ];
+          type Item = vscode.QuickPickItem & { 
+            ticket?: RecentTicket; 
+            command?: 'search' | 'searchText' | 'browseBoards' | 'loadMore' | 'openSettings' | 'refresh';
+            kind?: vscode.QuickPickItemKind;
+          };
 
-        const ticketItems: Item[] = allTickets.map(ticket => ({
-          label: `${ticket.key} - ${ticket.summary}`,
-          description: `${ticket.provider} • ${this.formatTimeAgo(ticket.updatedAt)} • ${ticket.priority} Priority`,
-          detail: ticket.description.substring(0, 100) + (ticket.description.length > 100 ? '...' : ''),
-          ticket
-        }));
+          const actionItems: Item[] = [
+            { label: '🔍 Quick Actions', kind: vscode.QuickPickItemKind.Separator },
+            { 
+              label: '$(search) Search by Key', 
+              description: 'Find a specific ticket by its key (e.g., PROJ-123)', 
+              command: 'search',
+              detail: 'Enter a ticket key to find it directly'
+            },
+            { 
+              label: '$(filter) Text Search', 
+              description: 'Search tickets by title or description content', 
+              command: 'searchText',
+              detail: 'Search across all ticket content'
+            },
+            { 
+              label: '$(project) Browse Boards', 
+              description: 'View tickets from specific boards assigned to you', 
+              command: 'browseBoards',
+              detail: 'Organized view by project boards'
+            },
+            { 
+              label: '$(refresh) Refresh', 
+              description: 'Reload the ticket list with fresh data', 
+              command: 'refresh',
+              detail: 'Get the latest updates'
+            },
+            { 
+              label: '$(add) Load More', 
+              description: `Show more tickets (currently showing ${Math.min(limit, allTickets.length)} of many)`, 
+              command: 'loadMore',
+              detail: `Increase to ${limit + 10} tickets`
+            },
+            { 
+              label: '$(gear) Settings', 
+              description: 'Configure Jira connection and preferences', 
+              command: 'openSettings',
+              detail: 'Manage your AI Plan configuration'
+            }
+          ];
 
-        const selected = await vscode.window.showQuickPick<Item>([...actionItems, ...ticketItems], {
-          placeHolder: allTickets.length === 0
-            ? 'No recent tickets found. Search by key/ID, load more, or open settings...'
-            : 'Select a ticket, search by key/ID, or load more...',
-          matchOnDescription: true,
-          matchOnDetail: true
-        });
+          const ticketSections: Item[] = [];
+          
+          if (allTickets.length > 0) {
+            // Group tickets by status and priority
+            const myTickets = allTickets.filter(t => t.assignee && t.assignee.toLowerCase().includes('me'));
+            const highPriorityTickets = allTickets.filter(t => ['high', 'urgent'].includes(t.priority));
+            const recentTickets = allTickets.slice(0, Math.min(limit, allTickets.length));
 
-        if (!selected) {
-          return null;
-        }
+            if (myTickets.length > 0) {
+              ticketSections.push({ label: '👤 My Assigned Tickets', kind: vscode.QuickPickItemKind.Separator });
+              ticketSections.push(...myTickets.slice(0, 5).map(ticket => this.createTicketItem(ticket)));
+            }
 
-        if (selected.command === 'loadMore') {
-          limit = Math.min(limit + 20, 100);
-          continue;
-        }
+            if (highPriorityTickets.length > 0) {
+              ticketSections.push({ label: '🔥 High Priority Tickets', kind: vscode.QuickPickItemKind.Separator });
+              ticketSections.push(...highPriorityTickets.slice(0, 5).map(ticket => this.createTicketItem(ticket)));
+            }
 
-        if (selected.command === 'openSettings') {
-          await vscode.commands.executeCommand('ai-plan.settings');
-          continue;
-        }
+            ticketSections.push({ label: '📋 Recent Activity', kind: vscode.QuickPickItemKind.Separator });
+            ticketSections.push(...recentTickets.map(ticket => this.createTicketItem(ticket)));
+          }
 
-        if (selected.command === 'search') {
-          const key = await vscode.window.showInputBox({
-            prompt: 'Enter issue key or ID (e.g., PROJ-123)',
-            placeHolder: 'PROJ-123'
+          const quickPick = vscode.window.createQuickPick<Item>();
+          quickPick.items = [...actionItems, ...ticketSections];
+          quickPick.placeholder = allTickets.length === 0
+            ? '🔍 No tickets found. Try searching or check your settings...'
+            : `🎯 Select a ticket to generate an AI implementation plan (${allTickets.length} available)`;
+          quickPick.matchOnDescription = true;
+          quickPick.matchOnDetail = true;
+          quickPick.ignoreFocusOut = false;
+          
+          // Add custom title and description
+          quickPick.title = '🤖 AI Plan - Select Ticket';
+          
+          const selected = await new Promise<Item | undefined>((resolve) => {
+            quickPick.onDidChangeSelection(items => {
+              if (items[0]) {
+                resolve(items[0]);
+                quickPick.hide();
+              }
+            });
+            quickPick.onDidHide(() => resolve(undefined));
+            quickPick.show();
           });
-          if (!key) {
+
+          if (!selected) {
+            return null;
+          }
+
+          if (selected.command === 'refresh') {
             continue;
           }
-          for (const provider of this.providers) {
-            try {
-              const ticket = await provider.getTicket(key);
-              return ticket;
-            } catch (error) {
+
+          if (selected.command === 'loadMore') {
+            limit = Math.min(limit + 10, 50);
+            continue;
+          }
+
+          if (selected.command === 'openSettings') {
+            await vscode.commands.executeCommand('ai-plan.settings');
+            continue;
+          }
+
+          if (selected.command === 'search') {
+            const key = await vscode.window.showInputBox({
+              prompt: 'Enter issue key or ID (e.g., PROJ-123)',
+              placeHolder: 'PROJ-123'
+            });
+            if (!key) {
+              continue;
+            }
+            for (const provider of this.providers) {
+              try {
+                const ticket = await provider.getTicket(key);
+                return ticket;
+              } catch (error) {
               // Try next provider
+              }
             }
-          }
-          await vscode.window.showErrorMessage('Ticket not found in configured providers.');
-          continue;
-        }
-
-        if (selected.command === 'searchText') {
-          const q = await vscode.window.showInputBox({
-            prompt: 'Search text (summary/description)',
-            placeHolder: 'e.g., auth bug login redirect'
-          });
-          if (!q) {
+            await vscode.window.showErrorMessage('Ticket not found in configured providers.');
             continue;
           }
-          const results: RecentTicket[] = [];
-          for (const provider of this.providers) {
-            try {
-              const method = (provider as any).searchByText;
-              if (typeof method === 'function') {
-                const found = await method.call(provider, q, 20);
-                results.push(...found);
-              }
-            } catch {
+
+          if (selected.command === 'searchText') {
+            const q = await vscode.window.showInputBox({
+              prompt: 'Search text (summary/description)',
+              placeHolder: 'e.g., auth bug login redirect'
+            });
+            if (!q) {
+              continue;
+            }
+            const results: RecentTicket[] = [];
+            for (const provider of this.providers) {
+              try {
+                const method = (provider as any).searchByText;
+                if (typeof method === 'function') {
+                  const found = await method.call(provider, q, 20);
+                  results.push(...found);
+                }
+              } catch {
               // ignore provider errors
+              }
             }
-          }
-          if (results.length === 0) {
-            await vscode.window.showWarningMessage('No matches found.');
+            if (results.length === 0) {
+              await vscode.window.showWarningMessage('No matches found.');
+              continue;
+            }
+            const items = results.map(r => ({
+              label: `${r.key} - ${r.summary}`,
+              description: `${r.provider} • ${this.formatTimeAgo(r.updatedAt)} • ${r.priority} Priority`,
+              detail: r.description.substring(0, 100) + (r.description.length > 100 ? '...' : ''),
+              ticket: r
+            })) as Item[];
+            const picked = await vscode.window.showQuickPick(items, {
+              placeHolder: 'Select a ticket from search results...',
+              matchOnDescription: true,
+              matchOnDetail: true
+            });
+            if (picked?.ticket) {return picked.ticket;}
             continue;
           }
-          const items = results.map(r => ({
-            label: `${r.key} - ${r.summary}`,
-            description: `${r.provider} • ${this.formatTimeAgo(r.updatedAt)} • ${r.priority} Priority`,
-            detail: r.description.substring(0, 100) + (r.description.length > 100 ? '...' : ''),
-            ticket: r
-          })) as Item[];
-          const picked = await vscode.window.showQuickPick(items, {
-            placeHolder: 'Select a ticket from search results...',
-            matchOnDescription: true,
-            matchOnDetail: true
-          });
-          if (picked?.ticket) return picked.ticket;
-          continue;
-        }
 
-        // Optional: Browse boards assigned to you
-        if ((selected as any).command === 'browseBoards') {
-          for (const provider of this.providers) {
-            const getBoards = (provider as any).getBoards;
-            const getBoardIssuesAssignedToMe = (provider as any).getBoardIssuesAssignedToMe;
-            if (typeof getBoards === 'function' && typeof getBoardIssuesAssignedToMe === 'function') {
-              const boards = await getBoards.call(provider, 50);
-              if (!boards || boards.length === 0) {
-                await vscode.window.showWarningMessage('No boards found.');
-                continue;
-              }
+          // Optional: Browse boards assigned to you
+          if ((selected as any).command === 'browseBoards') {
+            for (const provider of this.providers) {
+              const getBoards = (provider as any).getBoards;
+              const getBoardIssuesAssignedToMe = (provider as any).getBoardIssuesAssignedToMe;
+              if (typeof getBoards === 'function' && typeof getBoardIssuesAssignedToMe === 'function') {
+                const boards = await getBoards.call(provider, 50);
+                if (!boards || boards.length === 0) {
+                  await vscode.window.showWarningMessage('No boards found.');
+                  continue;
+                }
               type BoardItem = vscode.QuickPickItem & { boardId: number };
               const boardPick = await vscode.window.showQuickPick<BoardItem>(
                 boards.map((b: any) => ({ label: `${b.name}`, description: b.type ? `${b.type}` : undefined, boardId: b.id })),
                 { placeHolder: 'Select a board...' }
               );
-              if (!boardPick) continue;
+              if (!boardPick) {continue;}
               const issues = await getBoardIssuesAssignedToMe.call(provider, boardPick.boardId, 50);
               if (!issues || issues.length === 0) {
                 await vscode.window.showWarningMessage('No issues assigned to you on this board.');
@@ -189,15 +541,15 @@ export class RecentTicketsPicker {
                 matchOnDescription: true,
                 matchOnDetail: true
               });
-              if (picked?.ticket) return picked.ticket;
+              if (picked?.ticket) {return picked.ticket;}
+              }
             }
+            continue;
           }
-          continue;
-        }
 
-        if (selected.ticket) {
-          return selected.ticket;
-        }
+          if (selected.ticket) {
+            return selected.ticket;
+          }
       }
 
     } catch (error) {
@@ -205,6 +557,56 @@ export class RecentTicketsPicker {
       await vscode.window.showErrorMessage('Failed to fetch recent tickets. Please check your configuration.');
       return null;
     }
+  }
+
+  private createTicketItem(ticket: RecentTicket): any {
+    const priorityEmoji = this.getPriorityEmoji(ticket.priority);
+    const statusEmoji = this.getStatusEmoji(ticket.status);
+    const providerEmoji = this.getProviderEmoji(ticket.provider);
+    
+    return {
+      label: `${priorityEmoji} ${ticket.key} • ${ticket.summary}`,
+      description: `${providerEmoji} ${ticket.provider} • ${statusEmoji} ${ticket.status} • ${this.formatTimeAgo(ticket.updatedAt)}`,
+      detail: this.truncateDescription(ticket.description),
+      ticket
+    };
+  }
+
+  private getPriorityEmoji(priority: string): string {
+    const priorityMap: Record<string, string> = {
+      'urgent': '🔴',
+      'high': '🟠', 
+      'medium': '🟡',
+      'low': '🟢'
+    };
+    return priorityMap[priority.toLowerCase()] || '⚪';
+  }
+
+  private getStatusEmoji(status: string): string {
+    const statusLower = status.toLowerCase();
+    if (statusLower.includes('progress') || statusLower.includes('doing')) {return '⚡';}
+    if (statusLower.includes('done') || statusLower.includes('closed')) {return '✅';}
+    if (statusLower.includes('review')) {return '👀';}
+    if (statusLower.includes('blocked')) {return '🚫';}
+    if (statusLower.includes('todo') || statusLower.includes('open') || statusLower.includes('new')) {return '📝';}
+    return '📋';
+  }
+
+  private getProviderEmoji(provider: string): string {
+    const providerMap: Record<string, string> = {
+      'jira': '🏢',
+      'github': '🐙',
+      'linear': '📐',
+      'slack': '💬'
+    };
+    return providerMap[provider.toLowerCase()] || '🔗';
+  }
+
+  private truncateDescription(description: string, maxLength: number = 120): string {
+    if (!description) {return 'No description available';}
+    const cleaned = description.replace(/\s+/g, ' ').trim();
+    if (cleaned.length <= maxLength) {return cleaned;}
+    return `${cleaned.substring(0, maxLength - 3)  }...`;
   }
 
   private formatTimeAgo(date: Date): string {
@@ -245,5 +647,461 @@ ${ticket.description}
     });
 
     await vscode.window.showTextDocument(document);
+  }
+
+  // =================== NEW UI METHODS ===================
+
+  private async showTaskGroup(group: TaskGroup): Promise<RecentTicket | null> {
+    const items = group.tasks.map(task => ({
+      label: `${this.getPriorityEmoji(task.priority)} ${task.key} • ${task.summary}`,
+      description: `${this.getStatusEmoji(task.status)} ${task.status} • Updated ${this.formatTimeAgo(task.updatedAt)}`,
+      detail: this.truncateDescription(task.description),
+      task
+    }));
+
+    const selected = await vscode.window.showQuickPick(items, {
+      title: `${group.icon} ${group.title} (${group.count} tasks)`,
+      placeHolder: 'Select a task to generate an implementation plan...',
+      matchOnDescription: true,
+      matchOnDetail: true
+    });
+
+    return selected?.task || null;
+  }
+
+  private async showProjectBrowser(): Promise<RecentTicket | null> {
+    if (!this.jiraProvider) {return null;}
+
+    const projects = await this.jiraProvider.getTasksByProject();
+    
+    if (projects.length === 0) {
+      await vscode.window.showInformationMessage('No projects with assigned tasks found.');
+      return null;
+    }
+
+    const projectItems = projects.map(project => ({
+      label: `${project.icon} ${project.name}`,
+      description: `${project.taskCount} tasks assigned to you`,
+      detail: project.description,
+      project
+    }));
+
+    const selectedProject = await vscode.window.showQuickPick(projectItems, {
+      title: '🏢 Select Project/Board',
+      placeHolder: 'Choose a project to view your assigned tasks...',
+      matchOnDescription: true
+    });
+
+    if (!selectedProject) {return null;}
+
+    // Show tasks from selected project
+    const taskItems = selectedProject.project.tasks.map(task => ({
+      label: `${this.getPriorityEmoji(task.priority)} ${task.key} • ${task.summary}`,
+      description: `${this.getStatusEmoji(task.status)} ${task.status} • Updated ${this.formatTimeAgo(task.updatedAt)}`,
+      detail: this.truncateDescription(task.description),
+      task
+    }));
+
+    const selectedTask = await vscode.window.showQuickPick(taskItems, {
+      title: `${selectedProject.project.icon} ${selectedProject.project.name} Tasks`,
+      placeHolder: `Select from ${selectedProject.project.taskCount} assigned tasks...`,
+      matchOnDescription: true,
+      matchOnDetail: true
+    });
+
+    return selectedTask?.task || null;
+  }
+
+  private async showSprintTasks(): Promise<RecentTicket | null> {
+    if (!this.jiraProvider) {return null;}
+
+    try {
+      const sprintTasks = await this.jiraProvider.getCurrentSprintTasks();
+      
+      if (sprintTasks.length === 0) {
+        await vscode.window.showInformationMessage('No active sprint tasks found.');
+        return null;
+      }
+
+      const taskItems = sprintTasks.map(task => ({
+        label: `${this.getPriorityEmoji(task.priority)} ${task.key} • ${task.summary}`,
+        description: `${this.getStatusEmoji(task.status)} ${task.status} • Updated ${this.formatTimeAgo(task.updatedAt)}`,
+        detail: this.truncateDescription(task.description),
+        task
+      }));
+
+      const selectedTask = await vscode.window.showQuickPick(taskItems, {
+        title: '🏃 Active Sprint Tasks',
+        placeHolder: `Select from ${sprintTasks.length} sprint tasks...`,
+        matchOnDescription: true,
+        matchOnDetail: true
+      });
+
+      return selectedTask?.task || null;
+    } catch (error) {
+      await vscode.window.showErrorMessage('Failed to load sprint tasks. Please check your Jira configuration.');
+      return null;
+    }
+  }
+
+  private async showAllTasks(): Promise<RecentTicket | null> {
+    if (!this.jiraProvider) {return null;}
+
+    try {
+      const tasks = await this.jiraProvider.getRecentTickets(100);
+      
+      if (tasks.length === 0) {
+        await vscode.window.showInformationMessage('No tasks found.');
+        return null;
+      }
+
+      const taskItems = tasks.map(task => ({
+        label: `${this.getPriorityEmoji(task.priority)} ${task.key} • ${task.summary}`,
+        description: `${this.getProviderEmoji(task.provider)} ${task.provider} • ${this.getStatusEmoji(task.status)} ${task.status} • ${this.formatTimeAgo(task.updatedAt)}`,
+        detail: this.truncateDescription(task.description),
+        task
+      }));
+
+      const selectedTask = await vscode.window.showQuickPick(taskItems, {
+        title: '📋 All My Tasks',
+        placeHolder: `Select from ${tasks.length} assigned tasks...`,
+        matchOnDescription: true,
+        matchOnDetail: true
+      });
+
+      return selectedTask?.task || null;
+    } catch (error) {
+      await vscode.window.showErrorMessage('Failed to load all tasks. Please check your configuration.');
+      return null;
+    }
+  }
+
+  private async showRecentlyUpdated(): Promise<RecentTicket | null> {
+    if (!this.jiraProvider) {return null;}
+
+    try {
+      const recentTasks = await this.jiraProvider.getRecentlyUpdatedTasks(7, 50);
+      
+      if (recentTasks.length === 0) {
+        await vscode.window.showInformationMessage('No recently updated tasks found.');
+        return null;
+      }
+
+      const taskItems = recentTasks.map(task => ({
+        label: `${this.getPriorityEmoji(task.priority)} ${task.key} • ${task.summary}`,
+        description: `${this.getStatusEmoji(task.status)} ${task.status} • Updated ${this.formatTimeAgo(task.updatedAt)}`,
+        detail: this.truncateDescription(task.description),
+        task
+      }));
+
+      const selectedTask = await vscode.window.showQuickPick(taskItems, {
+        title: '📅 Recently Updated Tasks (Last 7 Days)',
+        placeHolder: `Select from ${recentTasks.length} recently updated tasks...`,
+        matchOnDescription: true,
+        matchOnDetail: true
+      });
+
+      return selectedTask?.task || null;
+    } catch (error) {
+      await vscode.window.showErrorMessage('Failed to load recent tasks. Please check your configuration.');
+      return null;
+    }
+  }
+
+  private async showTaskSearch(): Promise<RecentTicket | null> {
+    const searchOptions = [
+      {
+        label: '🔍 Search by Key',
+        description: 'Find a specific task by its key (e.g., PROJ-123)',
+        action: 'search_key'
+      },
+      {
+        label: '📝 Search by Text',
+        description: 'Search tasks by title or description content',
+        action: 'search_text'
+      },
+      {
+        label: '🔥 High Priority Only',
+        description: 'Show only high and urgent priority tasks',
+        action: 'filter_priority'
+      },
+      {
+        label: '📅 Due Soon',
+        description: 'Tasks due in the next 7 days',
+        action: 'due_soon'
+      }
+    ];
+
+    const selectedOption = await vscode.window.showQuickPick(searchOptions, {
+      title: '🔍 Search & Filter Options',
+      placeHolder: 'How would you like to find your task?'
+    });
+
+    if (!selectedOption || !this.jiraProvider) {return null;}
+
+    try {
+      switch (selectedOption.action) {
+      case 'search_key':
+        return await this.searchByKey();
+      case 'search_text':
+        return await this.searchByText();
+      case 'filter_priority':
+        return await this.showHighPriorityTasks();
+      case 'due_soon':
+        return await this.showDueSoonTasks();
+      default:
+        return null;
+      }
+    } catch (error) {
+      await vscode.window.showErrorMessage('Search failed. Please try again.');
+      return null;
+    }
+  }
+
+  private async searchByKey(): Promise<RecentTicket | null> {
+    const key = await vscode.window.showInputBox({
+      prompt: 'Enter task key (e.g., PROJ-123)',
+      placeHolder: 'PROJ-123',
+      title: '🔍 Search by Key'
+    });
+
+    if (!key || !this.jiraProvider) {return null;}
+
+    try {
+      const ticket = await this.jiraProvider.getTicket(key.trim().toUpperCase());
+      return ticket;
+    } catch (error) {
+      await vscode.window.showErrorMessage(`Task '${key}' not found or not accessible.`);
+      return null;
+    }
+  }
+
+  private async searchByText(): Promise<RecentTicket | null> {
+    const searchText = await vscode.window.showInputBox({
+      prompt: 'Enter search text (searches in title and description)',
+      placeHolder: 'e.g., login bug, API endpoint, user interface',
+      title: '📝 Search by Text'
+    });
+
+    if (!searchText || !this.jiraProvider) {return null;}
+
+    try {
+      const results = await (this.jiraProvider as any).searchByText(searchText, 20);
+      
+      if (results.length === 0) {
+        await vscode.window.showInformationMessage(`No tasks found containing "${searchText}".`);
+        return null;
+      }
+
+      const taskItems = results.map((task: RecentTicket) => ({
+        label: `${this.getPriorityEmoji(task.priority)} ${task.key} • ${task.summary}`,
+        description: `${this.getStatusEmoji(task.status)} ${task.status} • ${this.formatTimeAgo(task.updatedAt)}`,
+        detail: this.truncateDescription(task.description),
+        task
+      }));
+
+      const selectedTask = await vscode.window.showQuickPick(taskItems, {
+        title: `🔍 Search Results for "${searchText}"`,
+        placeHolder: `Select from ${results.length} matching tasks...`,
+        matchOnDescription: true,
+        matchOnDetail: true
+      });
+
+      return (selectedTask as any)?.task || null;
+    } catch (error) {
+      await vscode.window.showErrorMessage('Text search failed. Please try a different search term.');
+      return null;
+    }
+  }
+
+  private async showHighPriorityTasks(): Promise<RecentTicket | null> {
+    if (!this.jiraProvider) {return null;}
+
+    try {
+      const urgentTasks = await this.jiraProvider.getUrgentTasks(30);
+      
+      if (urgentTasks.length === 0) {
+        await vscode.window.showInformationMessage('No high priority tasks found.');
+        return null;
+      }
+
+      const taskItems = urgentTasks.map(task => ({
+        label: `${this.getPriorityEmoji(task.priority)} ${task.key} • ${task.summary}`,
+        description: `${this.getStatusEmoji(task.status)} ${task.status} • ${this.formatTimeAgo(task.updatedAt)}`,
+        detail: this.truncateDescription(task.description),
+        task
+      }));
+
+      const selectedTask = await vscode.window.showQuickPick(taskItems, {
+        title: '🔥 High Priority Tasks',
+        placeHolder: `Select from ${urgentTasks.length} high priority tasks...`,
+        matchOnDescription: true,
+        matchOnDetail: true
+      });
+
+      return selectedTask?.task || null;
+    } catch (error) {
+      await vscode.window.showErrorMessage('Failed to load high priority tasks.');
+      return null;
+    }
+  }
+
+  private async showDueSoonTasks(): Promise<RecentTicket | null> {
+    if (!this.jiraProvider) {return null;}
+
+    try {
+      const dueTasks = await this.jiraProvider.getTasksDueSoon(7, 30);
+      
+      if (dueTasks.length === 0) {
+        await vscode.window.showInformationMessage('No tasks due in the next 7 days.');
+        return null;
+      }
+
+      const taskItems = dueTasks.map(task => ({
+        label: `${this.getPriorityEmoji(task.priority)} ${task.key} • ${task.summary}`,
+        description: `${this.getStatusEmoji(task.status)} ${task.status} • Due soon • ${this.formatTimeAgo(task.updatedAt)}`,
+        detail: this.truncateDescription(task.description),
+        task
+      }));
+
+      const selectedTask = await vscode.window.showQuickPick(taskItems, {
+        title: '⏰ Tasks Due Soon (Next 7 Days)',
+        placeHolder: `Select from ${dueTasks.length} tasks due soon...`,
+        matchOnDescription: true,
+        matchOnDetail: true
+      });
+
+      return selectedTask?.task || null;
+    } catch (error) {
+      await vscode.window.showErrorMessage('Failed to load tasks due soon.');
+      return null;
+    }
+  }
+
+  // =================== SLACK-SPECIFIC METHODS ===================
+
+  private async showSlackChannels(): Promise<RecentTicket | null> {
+    if (!this.slackProvider) {return null;}
+
+    try {
+      const taskChannels = await this.slackProvider.getTaskChannels();
+      
+      if (taskChannels.length === 0) {
+        await vscode.window.showInformationMessage('No task-related Slack channels found.');
+        return null;
+      }
+
+      // Get channel names and task counts
+      const channelItems = [];
+      for (const channelId of taskChannels.slice(0, 20)) {
+        try {
+          const tasks = await this.slackProvider.getTasksByChannel(channelId, 10);
+          if (tasks.length > 0) {
+            const channelName = tasks[0].labels.find(label => label.startsWith('#'))?.substring(1) || channelId;
+            channelItems.push({
+              label: `💬 #${channelName}`,
+              description: `${tasks.length} tasks found`,
+              detail: 'Recent task discussions from this channel',
+              channelId,
+              tasks
+            });
+          }
+        } catch (error) {
+          console.error(`Error getting tasks for channel ${channelId}:`, error);
+        }
+      }
+
+      const selectedChannel = await vscode.window.showQuickPick(channelItems, {
+        title: '💬 Select Slack Channel',
+        placeHolder: 'Choose a channel to view tasks from...',
+        matchOnDescription: true
+      });
+
+      if (!selectedChannel) {return null;}
+
+      // Show tasks from selected channel
+      const taskItems = selectedChannel.tasks.map(task => ({
+        label: `${this.getPriorityEmoji(task.priority)} ${task.summary}`,
+        description: `${this.getStatusEmoji(task.status)} ${task.status} • ${this.formatTimeAgo(task.updatedAt)}`,
+        detail: this.truncateDescription(task.description),
+        task
+      }));
+
+      const selectedTask = await vscode.window.showQuickPick(taskItems, {
+        title: `💬 #${selectedChannel.label.replace('💬 #', '')} Tasks`,
+        placeHolder: `Select from ${selectedChannel.tasks.length} tasks...`,
+        matchOnDescription: true,
+        matchOnDetail: true
+      });
+
+      return selectedTask?.task || null;
+    } catch (error) {
+      await vscode.window.showErrorMessage('Failed to load Slack channels. Please check your configuration.');
+      return null;
+    }
+  }
+
+  private async showSlackMentions(): Promise<RecentTicket | null> {
+    if (!this.slackProvider) {return null;}
+
+    try {
+      const mentions = await this.slackProvider.getMyTaskMentions(7, 30);
+      
+      if (mentions.length === 0) {
+        await vscode.window.showInformationMessage('No recent mentions found in Slack.');
+        return null;
+      }
+
+      const taskItems = mentions.map(task => ({
+        label: `${this.getPriorityEmoji(task.priority)} ${task.summary}`,
+        description: `${this.getProviderEmoji('slack')} ${task.labels.find(l => l.startsWith('#')) || 'DM'} • ${this.getStatusEmoji(task.status)} ${task.status} • ${this.formatTimeAgo(task.updatedAt)}`,
+        detail: this.truncateDescription(task.description),
+        task
+      }));
+
+      const selectedTask = await vscode.window.showQuickPick(taskItems, {
+        title: '🧵 My Slack Mentions (Last 7 Days)',
+        placeHolder: `Select from ${mentions.length} mentions...`,
+        matchOnDescription: true,
+        matchOnDetail: true
+      });
+
+      return selectedTask?.task || null;
+    } catch (error) {
+      await vscode.window.showErrorMessage('Failed to load Slack mentions. Please check your configuration.');
+      return null;
+    }
+  }
+
+  private async showSlackHighPriority(): Promise<RecentTicket | null> {
+    if (!this.slackProvider) {return null;}
+
+    try {
+      const highPriorityTasks = await this.slackProvider.getHighPriorityTasks(20);
+      
+      if (highPriorityTasks.length === 0) {
+        await vscode.window.showInformationMessage('No high priority Slack tasks found.');
+        return null;
+      }
+
+      const taskItems = highPriorityTasks.map(task => ({
+        label: `${this.getPriorityEmoji(task.priority)} ${task.summary}`,
+        description: `${this.getProviderEmoji('slack')} ${task.labels.find(l => l.startsWith('#')) || 'DM'} • ${this.getStatusEmoji(task.status)} ${task.status} • ${this.formatTimeAgo(task.updatedAt)}`,
+        detail: this.truncateDescription(task.description),
+        task
+      }));
+
+      const selectedTask = await vscode.window.showQuickPick(taskItems, {
+        title: '🔥 High Priority Slack Tasks',
+        placeHolder: `Select from ${highPriorityTasks.length} urgent tasks...`,
+        matchOnDescription: true,
+        matchOnDetail: true
+      });
+
+      return selectedTask?.task || null;
+    } catch (error) {
+      await vscode.window.showErrorMessage('Failed to load high priority Slack tasks.');
+      return null;
+    }
   }
 }
