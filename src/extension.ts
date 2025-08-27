@@ -190,9 +190,9 @@ async function configureJira(context: vscode.ExtensionContext): Promise<void> {
 
 async function configureSlack(context: vscode.ExtensionContext): Promise<void> {
   const token = await vscode.window.showInputBox({
-    prompt: 'Enter your Slack Bot Token (xoxb-...)',
+    prompt: 'Enter your Slack Bot Token',
     password: true,
-    placeHolder: 'xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx',
+    placeHolder: 'Bot token from Slack API dashboard',
     validateInput: (value) => {
       if (!value) {
         return 'Token is required';
