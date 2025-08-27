@@ -73,7 +73,7 @@ class OllamaProvider extends base_1.BaseLLM {
             throw new Error('Failed to generate plan with Ollama. Make sure Ollama is running and the model is available.');
         }
     }
-    async makeRequest(prompt) {
+    async makeRequest(_prompt) {
         // This method is not used in Ollama implementation
         // as we handle the request directly in generatePlan
         throw new Error('makeRequest not implemented for Ollama');
@@ -95,15 +95,16 @@ class OllamaProvider extends base_1.BaseLLM {
                 }
             }, { responseType: 'stream' });
             let full = '';
-            const stream = response.data;
+            const stream = response.data; // ReadableStream
             await new Promise((resolve, reject) => {
                 stream.on('data', (chunk) => {
                     const text = chunk.toString('utf8');
                     // Ollama streams NDJSON lines: { response: "...", done: bool, ... }
                     for (const line of text.split(/\r?\n/)) {
                         const trimmed = line.trim();
-                        if (!trimmed)
+                        if (!trimmed) {
                             continue;
+                        }
                         try {
                             const obj = JSON.parse(trimmed);
                             if (obj.response) {
@@ -111,7 +112,9 @@ class OllamaProvider extends base_1.BaseLLM {
                                 try {
                                     onToken(obj.response);
                                 }
-                                catch { }
+                                catch (e) {
+                                    console.debug('onToken error:', e);
+                                }
                             }
                             if (obj.done) {
                                 // do nothing; wait for end

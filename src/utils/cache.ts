@@ -32,7 +32,7 @@ export interface CacheStats {
 export class AdvancedCache<T = any> {
   private cache = new Map<string, CacheEntry<T>>();
   private stats = { hits: 0, misses: 0 };
-  private cleanupTimer?: NodeJS.Timeout;
+  private cleanupTimer?: any; // NodeJS.Timeout
 
   constructor(private options: CacheOptions = {}) {
     this.options = {

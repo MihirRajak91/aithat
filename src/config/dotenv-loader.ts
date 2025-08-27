@@ -60,7 +60,7 @@ function parseDotenvContent(content: string): Record<string, string> {
     
     // Remove quotes if present
     if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
+        (value.startsWith('\'') && value.endsWith('\''))) {
       value = value.slice(1, -1);
     }
     

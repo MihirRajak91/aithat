@@ -2,7 +2,7 @@
  * Input validation utilities for the AI Plan extension
  */
 
-import { ValidationError, ErrorFactory } from './errorTypes';
+import { ErrorFactory } from './errorTypes';
 
 export interface ValidationRule<T = any> {
   test: (value: T) => boolean;
@@ -191,6 +191,14 @@ export const ConfigSchemas = {
     ]
   },
 
+  github: {
+    token: [
+      ValidationRules.required('GitHub token is required'),
+      ValidationRules.token('ghp_', 'GitHub token must start with "ghp_"'),
+      ValidationRules.minLength(40, 'GitHub token appears to be too short')
+    ]
+  },
+
   ollama: {
     model: [
       ValidationRules.required('Ollama model name is required'),
@@ -198,6 +206,17 @@ export const ConfigSchemas = {
     ],
     baseUrl: [
       ValidationRules.url('Must be a valid Ollama server URL')
+    ]
+  },
+
+  openRouter: {
+    apiKey: [
+      ValidationRules.required('OpenRouter API key is required'),
+      ValidationRules.token('sk-or-v1-', 'OpenRouter API key must start with "sk-or-v1-"'),
+      ValidationRules.minLength(40, 'OpenRouter API key appears to be too short')
+    ],
+    model: [
+      ValidationRules.minLength(1, 'Model name cannot be empty')
     ]
   }
 };
@@ -226,8 +245,16 @@ export class ConfigValidator {
     Validator.validateObject(config, ConfigSchemas.slack, component);
   }
 
+  static validateGitHubConfig(config: any, component: string = 'GitHubProvider'): void {
+    Validator.validateObject(config, ConfigSchemas.github, component);
+  }
+
   static validateOllamaConfig(config: any, component: string = 'OllamaProvider'): void {
     Validator.validateObject(config, ConfigSchemas.ollama, component);
+  }
+
+  static validateOpenRouterConfig(config: any, component: string = 'OpenRouterProvider'): void {
+    Validator.validateObject(config, ConfigSchemas.openRouter, component);
   }
 
   /**

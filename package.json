@@ -32,6 +32,16 @@
         "command": "ai-plan.settings",
         "title": "AI Plan: Settings",
         "category": "AI Plan"
+      },
+      {
+        "command": "ai-plan.openConfiguration",
+        "title": "AI Plan: Open Configuration Panel",
+        "category": "AI Plan"
+      },
+      {
+        "command": "ai-plan.showStatus",
+        "title": "AI Plan: Show Status",
+        "category": "AI Plan"
       }
     ],
     "menus": {

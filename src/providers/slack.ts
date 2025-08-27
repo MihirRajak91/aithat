@@ -23,7 +23,7 @@ import {
   SLACK_CACHE_DURATION,
   SLACK_BATCH_SIZE,
   MAX_CHANNELS_TO_PROCESS,
-  MAX_BOARDS_LIMIT,
+  // MAX_BOARDS_LIMIT, // TODO: Use when implementing board-like features
   DEFAULT_THREAD_REPLIES_LIMIT,
   SLACK_ERROR_MESSAGES
 } from '../constants/slack';

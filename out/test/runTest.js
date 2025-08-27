@@ -33,19 +33,21 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-const assert = __importStar(require("assert"));
-const vscode = __importStar(require("vscode"));
-suite('Extension Test Suite', () => {
-    vscode.window.showInformationMessage('Start all tests.');
-    test('Extension should be present', () => {
-        assert.ok(vscode.extensions.getExtension('ai-plan'));
-    });
-    test('Should activate', async () => {
-        const extension = vscode.extensions.getExtension('ai-plan');
-        if (extension) {
-            await extension.activate();
-            assert.ok(true);
-        }
-    });
-});
+const path = __importStar(require("path"));
+const test_electron_1 = require("@vscode/test-electron");
+async function main() {
+    try {
+        const extensionDevelopmentPath = path.resolve(__dirname, '../../');
+        const extensionTestsPath = path.resolve(__dirname, './suite/index');
+        await (0, test_electron_1.runTests)({
+            extensionDevelopmentPath,
+            extensionTestsPath
+        });
+    }
+    catch (err) {
+        console.error('Failed to run tests', err);
+        process.exit(1);
+    }
+}
+main();
 //# sourceMappingURL=runTest.js.map

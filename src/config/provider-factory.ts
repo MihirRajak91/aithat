@@ -6,6 +6,7 @@
 import { JiraProvider } from '../providers/jira';
 import { LinearProvider } from '../providers/linear';
 import { SlackProvider } from '../providers/slack';
+import { GitHubProvider } from '../providers/github';
 import { getProviderConfig, isProviderConfigured } from './environment';
 import { ErrorFactory } from '../utils/errorTypes';
 
@@ -53,6 +54,20 @@ export function createSlackProvider(): SlackProvider {
 }
 
 /**
+ * Create a GitHub provider using environment configuration
+ */
+export function createGitHubProvider(): GitHubProvider {
+  if (!isProviderConfigured('github')) {
+    throw ErrorFactory.invalidConfig('ProviderFactory', 'GitHub configuration missing in environment');
+  }
+  
+  const config = getProviderConfig('github');
+  return new GitHubProvider({
+    token: config.token!
+  });
+}
+
+/**
  * Get available providers based on environment configuration
  */
 export function getAvailableProviders(): string[] {
@@ -70,6 +85,10 @@ export function getAvailableProviders(): string[] {
     providers.push('slack');
   }
   
+  if (isProviderConfigured('github')) {
+    providers.push('github');
+  }
+  
   return providers;
 }
 
@@ -78,13 +97,15 @@ export function getAvailableProviders(): string[] {
  */
 export function createProvider(providerName: string) {
   switch (providerName.toLowerCase()) {
-    case 'jira':
-      return createJiraProvider();
-    case 'linear':
-      return createLinearProvider();
-    case 'slack':
-      return createSlackProvider();
-    default:
-      throw ErrorFactory.invalidConfig('ProviderFactory', `Unknown provider: ${providerName}`);
+  case 'jira':
+    return createJiraProvider();
+  case 'linear':
+    return createLinearProvider();
+  case 'slack':
+    return createSlackProvider();
+  case 'github':
+    return createGitHubProvider();
+  default:
+    throw ErrorFactory.invalidConfig('ProviderFactory', `Unknown provider: ${providerName}`);
   }
 }

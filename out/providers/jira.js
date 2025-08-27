@@ -2,11 +2,14 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.JiraProvider = void 0;
 const base_1 = require("./base");
+const cache_1 = require("../utils/cache");
 class JiraProvider extends base_1.BaseProvider {
     constructor() {
         super(...arguments);
-        this.taskCache = new Map();
-        this.CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+        this.cache = cache_1.cacheManager.getCache('jira', {
+            defaultTTL: 5 * 60 * 1000, // 5 minutes
+            maxSize: 50
+        });
         this.currentUser = null;
     }
     getProviderName() {
@@ -109,7 +112,7 @@ class JiraProvider extends base_1.BaseProvider {
     async getUrgentTasks(limit = 10) {
         const cacheKey = `urgent-tasks-${limit}`;
         return this.getCachedData(cacheKey, async () => {
-            const jql = `assignee = currentUser() AND priority in (Highest, High) AND status != Done AND status != Closed ORDER BY priority DESC, updated DESC`;
+            const jql = 'assignee = currentUser() AND priority in (Highest, High) AND status != Done AND status != Closed ORDER BY priority DESC, updated DESC';
             return await this.executeJQLQuery(jql, limit);
         });
     }
@@ -290,26 +293,21 @@ class JiraProvider extends base_1.BaseProvider {
         };
         return iconMap[boardType?.toLowerCase() || 'simple'] || '📊';
     }
-    // Caching system
-    async getCachedData(key, fetcher) {
-        const cached = this.taskCache.get(key);
-        if (cached && (Date.now() - cached.timestamp) < this.CACHE_DURATION) {
-            return cached.data;
-        }
-        const data = await fetcher();
-        this.taskCache.set(key, { data, timestamp: Date.now() });
-        return data;
+    // Enhanced caching system
+    async getCachedData(key, fetcher, ttl) {
+        return this.cache.getOrCompute(key, fetcher, ttl);
     }
     // Clear cache (useful for refresh operations)
     clearCache() {
-        this.taskCache.clear();
+        this.cache.clear();
     }
     // Get cache stats (for debugging)
     getCacheStats() {
-        return {
-            size: this.taskCache.size,
-            keys: Array.from(this.taskCache.keys())
-        };
+        return this.cache.getStats();
+    }
+    // Invalidate specific cache patterns
+    invalidateCache(pattern) {
+        return this.cache.invalidate(pattern);
     }
     // Enhanced board methods
     async getBoardsWithMyTasks() {
@@ -428,8 +426,9 @@ class JiraProvider extends base_1.BaseProvider {
         };
     }
     extractDescription(description) {
-        if (!description)
+        if (!description) {
             return '';
+        }
         // If it's a string, return as-is
         if (typeof description === 'string') {
             return description;
@@ -450,7 +449,7 @@ class JiraProvider extends base_1.BaseProvider {
             if (node.type === 'paragraph' && node.content) {
                 for (const inline of node.content) {
                     if (inline.type === 'text') {
-                        text += inline.text + ' ';
+                        text += `${inline.text} `;
                     }
                 }
                 text += '\n';

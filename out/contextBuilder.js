@@ -37,6 +37,7 @@ exports.ContextBuilder = void 0;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+// import { WorkspaceContext } from './types'; // TODO: Use this type when implementing context features
 class ContextBuilder {
     constructor() {
         this.MAX_CONTEXT_SIZE = 50 * 1024; // 50KB

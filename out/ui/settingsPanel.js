@@ -45,8 +45,9 @@ class SettingsPanel {
         this.panel.onDidDispose(() => { this.disposed = true; });
         this.panel.webview.html = this.getHtml();
         this.panel.webview.onDidReceiveMessage(async (msg) => {
-            if (this.disposed)
+            if (this.disposed) {
                 return;
+            }
             const ctx = (0, context_1.getExtensionContext)();
             if (!ctx) {
                 void vscode.window.showErrorMessage('Extension context not available.');

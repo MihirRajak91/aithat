@@ -34,10 +34,22 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BaseProvider = void 0;
+/**
+ * Base provider class for all ticket/task providers
+ * Provides common functionality for API authentication, request handling, and data mapping
+ */
 class BaseProvider {
+    /**
+     * Initialize provider with configuration
+     * @param config Provider configuration including authentication details
+     */
     constructor(config) {
         this.config = config;
     }
+    /**
+     * Generate authentication headers for API requests
+     * @returns Object containing authentication headers
+     */
     getAuthHeaders() {
         if (!this.config.token) {
             return {};
@@ -47,6 +59,13 @@ class BaseProvider {
             'Content-Type': 'application/json'
         };
     }
+    /**
+     * Make authenticated HTTP request to provider API
+     * @param url Target URL for the request
+     * @param options Additional axios options (method, data, params, etc.)
+     * @returns Promise resolving to response data
+     * @throws Error if request fails or response is invalid
+     */
     async makeRequest(url, options = {}) {
         const { default: axios } = await Promise.resolve().then(() => __importStar(require('axios')));
         try {
@@ -56,13 +75,25 @@ class BaseProvider {
                     ...this.getAuthHeaders(),
                     ...options.headers
                 },
+                timeout: 30000, // 30 second timeout
                 ...options
             });
             return response.data;
         }
         catch (error) {
             console.error(`Error making request to ${url}:`, error);
-            throw error;
+            // Re-throw with more context
+            if (error.response) {
+                const status = error.response.status;
+                const statusText = error.response.statusText;
+                throw new Error(`HTTP ${status} ${statusText}: Request to ${url} failed`);
+            }
+            else if (error.request) {
+                throw new Error(`Network error: Unable to reach ${url}`);
+            }
+            else {
+                throw new Error(`Request configuration error: ${error.message}`);
+            }
         }
     }
 }

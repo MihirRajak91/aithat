@@ -43,7 +43,7 @@ export class OllamaProvider extends BaseLLM {
     }
   }
 
-  protected async makeRequest(prompt: string): Promise<any> {
+  protected async makeRequest(_prompt: string): Promise<any> {
     // This method is not used in Ollama implementation
     // as we handle the request directly in generatePlan
     throw new Error('makeRequest not implemented for Ollama');
@@ -70,7 +70,7 @@ export class OllamaProvider extends BaseLLM {
       }, { responseType: 'stream' as any });
 
       let full = '';
-      const stream = response.data as NodeJS.ReadableStream;
+      const stream = response.data as any; // ReadableStream
       await new Promise<void>((resolve, reject) => {
         stream.on('data', (chunk: Buffer) => {
           const text = chunk.toString('utf8');
@@ -82,7 +82,7 @@ export class OllamaProvider extends BaseLLM {
               const obj = JSON.parse(trimmed);
               if (obj.response) {
                 full += obj.response;
-                try { onToken(obj.response); } catch {}
+                try { onToken(obj.response); } catch (e) { console.debug('onToken error:', e); }
               }
               if (obj.done) {
                 // do nothing; wait for end

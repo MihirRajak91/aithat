@@ -1,5 +1,5 @@
 import { BaseProvider } from './base';
-import { RecentTicket, TaskGroup, ProjectGroup, JiraBoard, JiraSprint, TaskFilter } from '../types';
+import { RecentTicket, TaskGroup, ProjectGroup, JiraBoard, JiraSprint } from '../types';
 
 import { cacheManager } from '../utils/cache';
 

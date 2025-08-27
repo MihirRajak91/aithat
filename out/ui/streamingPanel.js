@@ -43,23 +43,27 @@ class StreamingPanel {
         this.panel.webview.html = this.getHtml();
     }
     setHeader(headerMarkdown) {
-        if (this.isDisposed)
+        if (this.isDisposed) {
             return;
+        }
         this.panel.webview.postMessage({ type: 'header', markdown: headerMarkdown });
     }
     setProgress(current, total) {
-        if (this.isDisposed)
+        if (this.isDisposed) {
             return;
+        }
         this.panel.webview.postMessage({ type: 'progress', current, total });
     }
     appendToken(text) {
-        if (this.isDisposed)
+        if (this.isDisposed) {
             return;
+        }
         this.panel.webview.postMessage({ type: 'append', text });
     }
     finish() {
-        if (this.isDisposed)
+        if (this.isDisposed) {
             return;
+        }
         this.panel.webview.postMessage({ type: 'done' });
     }
     getHtml() {

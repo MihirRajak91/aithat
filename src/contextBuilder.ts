@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { WorkspaceContext } from './types';
+// import { WorkspaceContext } from './types'; // TODO: Use this type when implementing context features
 
 export class ContextBuilder {
   private readonly MAX_CONTEXT_SIZE = 50 * 1024; // 50KB

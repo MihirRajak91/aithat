@@ -3,6 +3,7 @@ import { RecentTicketsPicker } from './ui/recentTicketsPicker';
 import { PlanGenerator } from './ui/planGenerator';
 import { setExtensionContext } from './context';
 import { SettingsPanel } from './ui/settingsPanel';
+import { ConfigurationPanel } from './ui/configurationPanel';
 import { feedbackSystem } from './ui/feedbackSystem';
 import { errorHandler } from './ui/errorHandler';
 import { loadDotenv } from './config/dotenv-loader';
@@ -96,6 +97,22 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(settingsDisposable);
 
+  // Register new configuration panel command
+  const configPanelDisposable = vscode.commands.registerCommand('ai-plan.openConfiguration', async () => {
+    try {
+      feedbackSystem.showStatusBarMessage('$(gear) Opening configuration...', 'info');
+      const configPanel = new ConfigurationPanel(context);
+      await configPanel.show();
+    } catch (error) {
+      await errorHandler.handleError(
+        error instanceof Error ? error : new Error(String(error)),
+        'configuration_open'
+      );
+    }
+  });
+
+  context.subscriptions.push(configPanelDisposable);
+
   // Register status command
   const statusDisposable = vscode.commands.registerCommand('ai-plan.showStatus', async () => {
     await feedbackSystem.showSuccess('AI Plan extension is active and ready!', {
@@ -111,6 +128,12 @@ export function activate(context: vscode.ExtensionContext) {
           label: 'Open Settings',
           action: async () => {
             await vscode.commands.executeCommand('ai-plan.settings');
+          }
+        },
+        {
+          label: 'Configure Extension',
+          action: async () => {
+            await vscode.commands.executeCommand('ai-plan.openConfiguration');
           }
         },
         {

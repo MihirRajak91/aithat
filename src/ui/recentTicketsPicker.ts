@@ -1,32 +1,70 @@
 import * as vscode from 'vscode';
 import { getExtensionContext } from '../context';
-import { RecentTicket, TaskGroup, ProjectGroup } from '../types';
-import { JiraProvider } from '../providers/jira';
-import { SlackProvider } from '../providers/slack';
+import { RecentTicket, TaskGroup } from '../types';
 import { BaseProvider } from '../providers/base';
 import { feedbackSystem } from './feedbackSystem';
+import { errorHandler } from './errorHandler';
+import { getAvailableProviders, createProvider } from '../config/provider-factory';
+import { ErrorFactory, ExtensionError } from '../utils/errorTypes';
 
 export class RecentTicketsPicker {
   private providers: BaseProvider[] = [];
-  private jiraProvider: JiraProvider | null = null;
-  private slackProvider: SlackProvider | null = null;
 
   constructor() {
-    // Initialize providers (Jira and Slack)
+    // Initialize providers using the factory
     this.initializeProviders();
   }
 
   private async initializeProviders(): Promise<void> {
-    const jiraConfig = await this.getJiraConfig();
-    if (jiraConfig) {
-      this.jiraProvider = new JiraProvider(jiraConfig);
-      this.providers.push(this.jiraProvider);
-    }
+    try {
+      const availableProviders = getAvailableProviders();
+      
+      if (availableProviders.length === 0) {
+        await feedbackSystem.showWarning(
+          'No providers configured. Please configure at least one service (Jira, Linear, Slack, or GitHub).',
+          {
+            title: 'Configuration Required',
+            actions: [
+              {
+                label: 'Configure Services',
+                action: async () => {
+                  await vscode.commands.executeCommand('ai-plan.configure');
+                }
+              }
+            ]
+          }
+        );
+        return;
+      }
 
-    const slackConfig = await this.getSlackConfig();
-    if (slackConfig) {
-      this.slackProvider = new SlackProvider(slackConfig);
-      this.providers.push(this.slackProvider);
+      // Create providers using the factory
+      for (const providerName of availableProviders) {
+        try {
+          const provider = createProvider(providerName);
+          this.providers.push(provider);
+          console.log(`Initialized ${providerName} provider`);
+        } catch (error) {
+          const extensionError = error instanceof ExtensionError 
+            ? error 
+            : ErrorFactory.invalidConfig('RecentTicketsPicker', `Failed to initialize ${providerName}: ${error.message}`);
+          
+          await errorHandler.handleExtensionError(extensionError);
+        }
+      }
+
+      if (this.providers.length === 0) {
+        throw ErrorFactory.invalidConfig(
+          'RecentTicketsPicker', 
+          'No providers could be initialized. Check your configuration.'
+        );
+      }
+
+    } catch (error) {
+      const extensionError = error instanceof ExtensionError 
+        ? error 
+        : ErrorFactory.invalidConfig('RecentTicketsPicker', `Provider initialization failed: ${error.message}`);
+      
+      await errorHandler.handleExtensionError(extensionError);
     }
   }
 
@@ -63,18 +101,27 @@ export class RecentTicketsPicker {
 
   async showRecentTickets(): Promise<RecentTicket | null> {
     try {
-      // Use enhanced UI flow
+      // Ensure providers are initialized
+      await this.initializeProviders();
+      
+      if (this.providers.length === 0) {
+        return null; // User will have been shown configuration prompt
+      }
+
       return await this.showEnhancedTaskSelection();
     } catch (error) {
-      console.error('Error in showRecentTickets:', error);
-      // Fallback to legacy flow
-      return await this.showLegacyTaskSelection();
+      const extensionError = error instanceof ExtensionError 
+        ? error 
+        : ErrorFactory.invalidConfig('RecentTicketsPicker', `Task selection failed: ${error.message}`);
+      
+      await errorHandler.handleExtensionError(extensionError);
+      return null;
     }
   }
 
   private async showEnhancedTaskSelection(): Promise<RecentTicket | null> {
-    if (!this.jiraProvider && !this.slackProvider) {
-      throw new Error('No providers initialized. Please configure Jira or Slack.');
+    if (this.providers.length === 0) {
+      throw ErrorFactory.invalidConfig('RecentTicketsPicker', 'No providers available for task selection');
     }
 
     return await vscode.window.withProgress({

@@ -20,6 +20,11 @@ interface EnvironmentConfig {
     botToken?: string;
   };
   
+  // GitHub
+  github: {
+    token?: string;
+  };
+  
   // Ollama
   ollama: {
     baseUrl: string;
@@ -29,6 +34,7 @@ interface EnvironmentConfig {
   // OpenRouter
   openRouter: {
     apiKey?: string;
+    model?: string;
   };
   
   // Development
@@ -55,12 +61,16 @@ export function loadEnvironmentConfig(): EnvironmentConfig {
     slack: {
       botToken: env.SLACK_BOT_TOKEN
     },
+    github: {
+      token: env.GITHUB_TOKEN
+    },
     ollama: {
       baseUrl: env.OLLAMA_BASE_URL || 'http://localhost:11434',
       model: env.OLLAMA_MODEL || 'llama2:13b'
     },
     openRouter: {
-      apiKey: env.OPENROUTER_API_KEY
+      apiKey: env.OPENROUTER_API_KEY,
+      model: env.OPENROUTER_MODEL || 'anthropic/claude-3-sonnet-20240229'
     },
     nodeEnv: env.NODE_ENV || 'development',
     logLevel: env.LOG_LEVEL || 'info'
@@ -70,7 +80,7 @@ export function loadEnvironmentConfig(): EnvironmentConfig {
 /**
  * Get configuration for a specific provider
  */
-export function getProviderConfig(provider: 'jira' | 'linear' | 'slack' | 'ollama' | 'openRouter') {
+export function getProviderConfig(provider: 'jira' | 'linear' | 'slack' | 'github' | 'ollama' | 'openRouter') {
   const config = loadEnvironmentConfig();
   return config[provider];
 }
@@ -78,18 +88,20 @@ export function getProviderConfig(provider: 'jira' | 'linear' | 'slack' | 'ollam
 /**
  * Check if environment variables are properly configured for a provider
  */
-export function isProviderConfigured(provider: 'jira' | 'linear' | 'slack'): boolean {
+export function isProviderConfigured(provider: 'jira' | 'linear' | 'slack' | 'github'): boolean {
   const config = loadEnvironmentConfig();
   
   switch (provider) {
-    case 'jira':
-      return !!(config.jira.baseUrl && config.jira.token);
-    case 'linear':
-      return !!config.linear.apiToken;
-    case 'slack':
-      return !!config.slack.botToken;
-    default:
-      return false;
+  case 'jira':
+    return !!(config.jira.baseUrl && config.jira.token);
+  case 'linear':
+    return !!config.linear.apiToken;
+  case 'slack':
+    return !!config.slack.botToken;
+  case 'github':
+    return !!config.github.token;
+  default:
+    return false;
   }
 }
 
@@ -110,9 +122,13 @@ export function getMaskedConfig(): Record<string, any> {
     slack: {
       botToken: config.slack.botToken ? '***MASKED***' : undefined
     },
+    github: {
+      token: config.github.token ? '***MASKED***' : undefined
+    },
     ollama: config.ollama,
     openRouter: {
-      apiKey: config.openRouter.apiKey ? '***MASKED***' : undefined
+      apiKey: config.openRouter.apiKey ? '***MASKED***' : undefined,
+      model: config.openRouter.model
     },
     nodeEnv: config.nodeEnv,
     logLevel: config.logLevel

@@ -1,8 +1,14 @@
 import * as vscode from 'vscode';
 import { RecentTicket, LLMResponse } from '../types';
 import { OllamaProvider } from '../llm/ollama';
+import { OpenRouterProvider } from '../llm/openrouter';
 import { ContextBuilder } from '../contextBuilder';
 import { StreamingPanel } from './streamingPanel';
+import { taskQueue } from '../utils/taskQueue';
+import { feedbackSystem } from './feedbackSystem';
+import { ErrorFactory, ExtensionError } from '../utils/errorTypes';
+import { errorHandler } from './errorHandler';
+import { getProviderConfig } from '../config/environment';
 
 export class PlanGenerator {
   private contextBuilder: ContextBuilder;
@@ -14,41 +20,152 @@ export class PlanGenerator {
   }
 
   async generatePlan(ticket: RecentTicket): Promise<void> {
+    const taskId = `plan-generation-${ticket.key}-${Date.now()}`;
+    
     try {
-      // Show progress
-      await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: 'Generating implementation plan...',
-        cancellable: false
-      }, async (progress) => {
-        progress.report({ message: 'Building workspace context...' });
-        
-        // Build workspace context
-        const context = await this.contextBuilder.buildContext();
-        
-        progress.report({ message: 'Generating plan with AI...' });
-        
-        // Initialize Ollama provider (local AI)
-        const ollamaProvider = new OllamaProvider({
-          model: 'llama2:13b'
-        });
-        
-        // Format prompt
-        const prompt = this.formatEnhancedPrompt(ticket, context);
-        
-        // Stream plan into a webview panel styled like a chat window
-        await this.displayStreaming(ticket, async (append) => {
-          await ollamaProvider.streamGeneratePlan(prompt, (token) => {
-            append(token);
-          });
-        });
+      // Queue the plan generation as a background task
+      const taskResult = await taskQueue.enqueue({
+        id: taskId,
+        name: `Generate Plan for ${ticket.key}`,
+        priority: 'high',
+        timeout: 120000, // 2 minutes
+        operation: async () => {
+          return this.generatePlanInternal(ticket);
+        }
       });
 
+      if (taskResult.status === 'completed' && taskResult.result) {
+        // Show the generated plan
+        await this.showPlan(ticket, taskResult.result);
+      } else if (taskResult.status === 'failed' && taskResult.error) {
+        await errorHandler.handleExtensionError(taskResult.error);
+      }
+
     } catch (error) {
-      console.error('Error generating plan:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      await vscode.window.showErrorMessage(`Failed to generate plan: ${errorMessage}`);
+      const extensionError = error instanceof ExtensionError 
+        ? error 
+        : ErrorFactory.workspaceError('PlanGenerator', 'generate_plan', error.message);
+      
+      await errorHandler.handleExtensionError(extensionError);
     }
+  }
+
+  private async generatePlanInternal(ticket: RecentTicket): Promise<{ plan: string; context: string }> {
+    return await feedbackSystem.showProgress(
+      `Generating plan for ${ticket.key}`,
+      async (progress) => {
+        progress.report({ message: 'Building workspace context...', increment: 20 });
+        
+        // Build context
+        const context = await this.contextBuilder.buildContext();
+        
+        progress.report({ message: 'Initializing AI provider...', increment: 40 });
+        
+        // Get LLM provider based on configuration
+        const llmProvider = this.createLLMProvider();
+        
+        progress.report({ message: 'Generating implementation plan...', increment: 60 });
+        
+        // Generate plan
+        const response = await llmProvider.generatePlan(ticket, context, undefined, {});
+        
+        progress.report({ message: 'Plan generated successfully!', increment: 100 });
+        
+        return { plan: response.content, context };
+      },
+      { cancellable: true }
+    );
+  }
+
+  private createLLMProvider() {
+    // Try OpenRouter first if configured
+    const openRouterConfig = getProviderConfig('openRouter');
+    if (openRouterConfig.apiKey) {
+      return new OpenRouterProvider({
+        apiKey: openRouterConfig.apiKey,
+        model: openRouterConfig.model
+      });
+    }
+
+    // Fall back to Ollama
+    const ollamaConfig = getProviderConfig('ollama');
+    return new OllamaProvider({
+      baseUrl: ollamaConfig.baseUrl,
+      model: ollamaConfig.model
+    });
+  }
+
+  private async showPlan(ticket: RecentTicket, result: { plan: string; context: string }): Promise<void> {
+    try {
+      // Create a new markdown document with the plan
+      const planDocument = await vscode.workspace.openTextDocument({
+        content: this.formatPlanDocument(ticket, result.plan, result.context),
+        language: 'markdown'
+      });
+
+      // Show the document
+      await vscode.window.showTextDocument(planDocument, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.Beside
+      });
+
+      // Show success notification
+      await feedbackSystem.showSuccess(
+        `Implementation plan generated for ${ticket.key}`,
+        {
+          title: 'Plan Generated',
+          actions: [
+            {
+              label: 'View in Browser',
+              action: async () => {
+                if (ticket.url) {
+                  await vscode.env.openExternal(vscode.Uri.parse(ticket.url));
+                }
+              }
+            }
+          ]
+        }
+      );
+
+    } catch (error) {
+      const extensionError = error instanceof ExtensionError 
+        ? error 
+        : ErrorFactory.workspaceError('PlanGenerator', 'show_plan', error.message);
+      
+      await errorHandler.handleExtensionError(extensionError);
+    }
+  }
+
+  private formatPlanDocument(ticket: RecentTicket, plan: string, context: string): string {
+    const timestamp = new Date().toISOString();
+    
+    return `# Implementation Plan: ${ticket.summary}
+
+**Generated:** ${timestamp}
+**Ticket:** ${ticket.key} (${ticket.provider})
+**Priority:** ${ticket.priority}
+**Status:** ${ticket.status}
+
+## Ticket Description
+${ticket.description || 'No description provided'}
+
+**Labels:** ${ticket.labels.length > 0 ? ticket.labels.join(', ') : 'None'}
+**URL:** ${ticket.url}
+
+---
+
+${plan}
+
+---
+
+## Workspace Context Summary
+\`\`\`
+${context.substring(0, 1000)}${context.length > 1000 ? '...\n(Context truncated for display)' : ''}
+\`\`\`
+
+---
+*Generated by AI Plan Extension*
+`;
   }
 
   private formatEnhancedPrompt(ticket: RecentTicket, context: string): string {

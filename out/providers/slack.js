@@ -1,468 +1,493 @@
 "use strict";
+/**
+ * Slack Provider for AI Plan Extension
+ *
+ * This provider integrates with Slack's Web API to retrieve task-related messages
+ * and discussions for generating AI implementation plans. It includes intelligent
+ * task identification, caching for performance, and comprehensive error handling.
+ *
+ * @author AI Plan Extension
+ * @version 1.0.0
+ */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SlackProvider = void 0;
-const base_1 = require("./base");
 const web_api_1 = require("@slack/web-api");
+const base_1 = require("./base");
+const slack_1 = require("../constants/slack");
+const slackUtils_1 = require("../utils/slackUtils");
+/**
+ * Slack provider implementation for retrieving and processing task-related messages
+ */
 class SlackProvider extends base_1.BaseProvider {
+    // =================== CONSTRUCTOR ===================
+    /**
+     * Creates a new SlackProvider instance
+     * @param config - Slack configuration including bot token
+     */
+    constructor(config) {
+        super(config);
+        /** In-memory cache for API responses */
+        this.messageCache = new Map();
+        /** Current authenticated user information */
+        this.currentUser = null;
+        if (!slackUtils_1.SlackValidator.isValidBotToken(config.token)) {
+            slackUtils_1.SlackLogger.warn('Invalid bot token format provided');
+        }
+        this.client = new web_api_1.WebClient(config.token, {
+            retryConfig: {
+                retries: 3,
+                factor: 2
+            }
+        });
+        slackUtils_1.SlackLogger.info('SlackProvider initialized');
+    }
+    // =================== PUBLIC API METHODS ===================
+    /**
+     * Gets the provider name identifier
+     * @returns The provider name
+     */
     getProviderName() {
         return 'slack';
     }
-    constructor(config) {
-        super(config);
-        this.messageCache = new Map();
-        this.CACHE_DURATION = 10 * 60 * 1000; // 10 minutes (longer due to rate limits)
-        this.BATCH_SIZE = 15; // Align with Slack's new rate limits
-        this.currentUser = null;
-        this.client = new web_api_1.WebClient(config.token);
-    }
+    /**
+     * Validates the Slack configuration and connection
+     * @returns Promise resolving to validation result
+     */
     async validateConfig() {
         if (!this.config.token) {
+            slackUtils_1.SlackLogger.error('No token provided in configuration');
             return false;
         }
         try {
+            slackUtils_1.SlackLogger.debug('Validating Slack configuration...');
             const auth = await this.client.auth.test();
-            this.currentUser = auth.user; // Cache user info
-            return auth.ok === true;
+            if (!auth.ok) {
+                slackUtils_1.SlackLogger.error('Auth test failed:', auth.error);
+                return false;
+            }
+            // Cache user information for later use
+            this.currentUser = {
+                id: auth.user_id,
+                name: auth.user
+            };
+            slackUtils_1.SlackLogger.info('Slack configuration validated successfully', {
+                user: this.currentUser.name,
+                team: auth.team
+            });
+            return true;
         }
         catch (error) {
-            console.error('Slack validation failed:', error);
+            slackUtils_1.SlackLogger.error('Slack validation failed:', error);
             return false;
         }
     }
-    // =================== CORE OPTIMIZED METHODS ===================
+    /**
+     * Retrieves a specific ticket by ID (not implemented for Slack)
+     * @param id - The message timestamp ID
+     * @returns Promise that rejects with not implemented error
+     */
     async getTicket(id) {
-        // For Slack, the ID format is timestamp (ts)
-        // We'll need to search for the message by its timestamp
-        throw new Error('getTicket not implemented for Slack - use search instead');
+        slackUtils_1.SlackLogger.warn(`getTicket called with ID: ${id} - not implemented for Slack`);
+        throw new Error('getTicket not implemented for Slack - use search methods instead');
     }
+    /**
+     * Retrieves recent task-related messages from Slack
+     * @param limit - Maximum number of tasks to retrieve
+     * @returns Promise resolving to array of recent tickets
+     */
     async getRecentTickets(limit = 10) {
+        slackUtils_1.SlackLogger.debug(`Fetching ${limit} recent tickets`);
         const cacheKey = `recent-tasks-${limit}`;
         return this.getCachedData(cacheKey, async () => {
-            const taskChannels = await this.getTaskChannels();
-            const allTasks = [];
-            // Process channels in batches to respect rate limits
-            for (const channelId of taskChannels.slice(0, 10)) {
-                try {
-                    const channelTasks = await this.getTasksFromChannel(channelId, Math.ceil(limit / 2));
-                    allTasks.push(...channelTasks);
+            try {
+                const taskChannels = await this.getTaskChannels();
+                const allTasks = [];
+                // Process channels with concurrency control
+                const channelsToProcess = taskChannels.slice(0, slack_1.MAX_CHANNELS_TO_PROCESS);
+                const tasksPerChannel = Math.ceil(limit / channelsToProcess.length);
+                const channelPromises = channelsToProcess.map(async (channelId) => {
+                    try {
+                        return await this.getTasksFromChannel(channelId, tasksPerChannel);
+                    }
+                    catch (error) {
+                        slackUtils_1.SlackLogger.error(`Error fetching tasks from channel ${channelId}:`, error);
+                        return [];
+                    }
+                });
+                const channelResults = await Promise.all(channelPromises);
+                for (const tasks of channelResults) {
+                    allTasks.push(...tasks);
                 }
-                catch (error) {
-                    console.error(`Error fetching tasks from channel ${channelId}:`, error);
-                }
+                // Sort by updated time and limit results
+                const sortedTasks = allTasks
+                    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+                    .slice(0, limit);
+                slackUtils_1.SlackLogger.info(`Retrieved ${sortedTasks.length} recent tasks from ${channelsToProcess.length} channels`);
+                return sortedTasks;
             }
-            // Sort by updated time and limit results
-            return allTasks
-                .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-                .slice(0, limit);
+            catch (error) {
+                slackUtils_1.SlackLogger.error('Failed to fetch recent tickets:', error);
+                throw new Error(slack_1.SLACK_ERROR_MESSAGES.NETWORK_ERROR);
+            }
         });
     }
+    // =================== SPECIALIZED QUERY METHODS ===================
+    /**
+     * Retrieves task-related mentions of the current user
+     * @param days - Number of days to look back (default: 7)
+     * @param limit - Maximum number of mentions to retrieve (default: 20)
+     * @returns Promise resolving to array of mentioned tasks
+     */
     async getMyTaskMentions(days = 7, limit = 20) {
+        slackUtils_1.SlackLogger.debug(`Fetching task mentions for last ${days} days`);
         const cacheKey = `my-mentions-${days}-${limit}`;
         return this.getCachedData(cacheKey, async () => {
             if (!this.currentUser) {
-                await this.validateConfig(); // Ensure we have user info
-            }
-            const query = `from:@${this.currentUser} OR mentions:@${this.currentUser}`;
-            const result = await this.client.search.messages({
-                query,
-                count: limit,
-                sort: 'timestamp',
-                sort_dir: 'desc'
-            });
-            if (!result.messages?.matches) {
-                return [];
-            }
-            const tasks = [];
-            for (const match of result.messages.matches.slice(0, limit)) {
-                if (this.isTaskMessage(match)) {
-                    const channel = await this.getChannelInfo(match.channel?.id || '');
-                    const ticketData = { ...match, channel };
-                    tasks.push(this.mapToRecentTicket(ticketData));
+                await this.validateConfig();
+                if (!this.currentUser) {
+                    throw new Error('Unable to determine current user');
                 }
             }
-            return tasks.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+            try {
+                const query = slackUtils_1.SlackValidator.sanitizeSearchQuery(`from:@${this.currentUser.name} OR mentions:@${this.currentUser.name}`);
+                const result = await this.client.search.messages({
+                    query,
+                    count: limit,
+                    sort: 'timestamp',
+                    sort_dir: 'desc'
+                });
+                if (!result.ok) {
+                    throw new Error(result.error || 'Search failed');
+                }
+                const tasks = await this.processSearchResults(result.messages?.matches || []);
+                slackUtils_1.SlackLogger.info(`Retrieved ${tasks.length} task mentions`);
+                return tasks;
+            }
+            catch (error) {
+                slackUtils_1.SlackLogger.error('Failed to fetch task mentions:', error);
+                throw new Error(slack_1.SLACK_ERROR_MESSAGES.NETWORK_ERROR);
+            }
         });
     }
+    /**
+     * Retrieves tasks from a specific Slack channel
+     * @param channelId - The channel ID to search
+     * @param limit - Maximum number of tasks to retrieve (default: 20)
+     * @returns Promise resolving to array of channel tasks
+     */
     async getTasksByChannel(channelId, limit = 20) {
+        if (!slackUtils_1.SlackValidator.isValidChannelId(channelId)) {
+            throw new Error(`Invalid channel ID: ${channelId}`);
+        }
+        slackUtils_1.SlackLogger.debug(`Fetching ${limit} tasks from channel ${channelId}`);
         const cacheKey = `channel-tasks-${channelId}-${limit}`;
         return this.getCachedData(cacheKey, async () => {
             return await this.getTasksFromChannel(channelId, limit);
         });
     }
+    /**
+     * Searches for tasks using text query
+     * @param query - Search query string
+     * @param limit - Maximum number of results (default: 20)
+     * @returns Promise resolving to array of matching tasks
+     */
     async searchTasks(query, limit = 20) {
-        const cacheKey = `search-${query}-${limit}`;
+        const sanitizedQuery = slackUtils_1.SlackValidator.sanitizeSearchQuery(query);
+        slackUtils_1.SlackLogger.debug(`Searching for tasks with query: "${sanitizedQuery}"`);
+        const cacheKey = `search-${sanitizedQuery}-${limit}`;
         return this.getCachedData(cacheKey, async () => {
-            // Enhance search query with task-related keywords
-            const enhancedQuery = `${query} (TODO OR task OR bug OR feature OR urgent OR priority)`;
-            const result = await this.client.search.messages({
-                query: enhancedQuery,
-                count: limit,
-                sort: 'timestamp',
-                sort_dir: 'desc'
-            });
-            if (!result.messages?.matches) {
-                return [];
-            }
-            const tasks = [];
-            for (const match of result.messages.matches) {
-                if (this.isTaskMessage(match)) {
-                    const channel = await this.getChannelInfo(match.channel?.id || '');
-                    const ticketData = { ...match, channel };
-                    tasks.push(this.mapToRecentTicket(ticketData));
+            try {
+                // Enhance query with task-related keywords
+                const enhancedQuery = `${sanitizedQuery} (TODO OR task OR bug OR feature OR urgent OR priority)`;
+                const result = await this.client.search.messages({
+                    query: enhancedQuery,
+                    count: limit,
+                    sort: 'timestamp',
+                    sort_dir: 'desc'
+                });
+                if (!result.ok) {
+                    throw new Error(result.error || 'Search failed');
                 }
+                const tasks = await this.processSearchResults(result.messages?.matches || []);
+                slackUtils_1.SlackLogger.info(`Search returned ${tasks.length} tasks for query: "${query}"`);
+                return tasks;
             }
-            return tasks.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+            catch (error) {
+                slackUtils_1.SlackLogger.error(`Search failed for query "${query}":`, error);
+                throw new Error(slack_1.SLACK_ERROR_MESSAGES.NETWORK_ERROR);
+            }
         });
     }
+    /**
+     * Retrieves high priority tasks from all accessible channels
+     * @param limit - Maximum number of tasks to retrieve (default: 20)
+     * @returns Promise resolving to array of high priority tasks
+     */
+    async getHighPriorityTasks(limit = 20) {
+        slackUtils_1.SlackLogger.debug(`Fetching ${limit} high priority tasks`);
+        const cacheKey = `high-priority-${limit}`;
+        return this.getCachedData(cacheKey, async () => {
+            try {
+                const query = '🔥 OR urgent OR critical OR "high priority" OR emergency';
+                const result = await this.client.search.messages({
+                    query,
+                    count: limit * 2, // Get more to filter
+                    sort: 'timestamp',
+                    sort_dir: 'desc'
+                });
+                if (!result.ok) {
+                    throw new Error(result.error || 'Search failed');
+                }
+                const allTasks = await this.processSearchResults(result.messages?.matches || []);
+                // Filter for only high and urgent priority tasks
+                const highPriorityTasks = allTasks
+                    .filter(task => ['high', 'urgent'].includes(task.priority))
+                    .slice(0, limit);
+                slackUtils_1.SlackLogger.info(`Retrieved ${highPriorityTasks.length} high priority tasks`);
+                return highPriorityTasks;
+            }
+            catch (error) {
+                slackUtils_1.SlackLogger.error('Failed to fetch high priority tasks:', error);
+                throw new Error(slack_1.SLACK_ERROR_MESSAGES.NETWORK_ERROR);
+            }
+        });
+    }
+    /**
+     * Retrieves list of task-related channel IDs
+     * @returns Promise resolving to array of channel IDs
+     */
     async getTaskChannels() {
         const cacheKey = 'task-channels';
         return this.getCachedData(cacheKey, async () => {
-            const result = await this.client.conversations.list({
-                types: 'public_channel,private_channel',
-                limit: 200
-            });
-            if (!result.channels) {
-                return [];
-            }
-            // Filter for task-related channels
-            return result.channels
-                .filter(channel => {
-                const name = channel.name?.toLowerCase() || '';
-                return name.includes('task') ||
-                    name.includes('todo') ||
-                    name.includes('project') ||
-                    name.includes('sprint') ||
-                    name.includes('bug') ||
-                    name.includes('feature') ||
-                    name.includes('dev') ||
-                    name.includes('engineering');
-            })
-                .map(channel => channel.id)
-                .filter(Boolean);
-        });
-    }
-    async getHighPriorityTasks(limit = 20) {
-        const cacheKey = `high-priority-${limit}`;
-        return this.getCachedData(cacheKey, async () => {
-            const query = '🔥 OR urgent OR critical OR "high priority" OR emergency';
-            const result = await this.client.search.messages({
-                query,
-                count: limit * 2, // Get more to filter
-                sort: 'timestamp',
-                sort_dir: 'desc'
-            });
-            if (!result.messages?.matches) {
-                return [];
-            }
-            const tasks = [];
-            for (const match of result.messages.matches) {
-                if (this.isTaskMessage(match) && (this.extractPriority(match) === 'urgent' || this.extractPriority(match) === 'high')) {
-                    const channel = await this.getChannelInfo(match.channel?.id || '');
-                    const ticketData = { ...match, channel };
-                    tasks.push(this.mapToRecentTicket(ticketData));
+            try {
+                slackUtils_1.SlackLogger.debug('Fetching task-related channels');
+                const result = await this.client.conversations.list({
+                    types: 'public_channel,private_channel',
+                    limit: 200
+                });
+                if (!result.ok || !result.channels) {
+                    throw new Error(result.error || 'Failed to fetch channels');
                 }
+                const taskChannels = slackUtils_1.SlackChannelFilter.filterTaskChannels(result.channels);
+                const sortedChannels = slackUtils_1.SlackChannelFilter.sortChannelsByRelevance(taskChannels);
+                const channelIds = sortedChannels.map(channel => channel.id);
+                slackUtils_1.SlackLogger.info(`Found ${channelIds.length} task-related channels`);
+                return channelIds;
             }
-            return tasks
-                .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-                .slice(0, limit);
+            catch (error) {
+                slackUtils_1.SlackLogger.error('Failed to fetch task channels:', error);
+                return [];
+            }
         });
     }
-    // =================== HELPER METHODS ===================
+    // =================== PRIVATE HELPER METHODS ===================
+    /**
+     * Retrieves tasks from a specific channel with intelligent filtering
+     * @private
+     */
     async getTasksFromChannel(channelId, limit) {
         try {
+            slackUtils_1.SlackLogger.debug(`Fetching messages from channel ${channelId}`);
             const result = await this.client.conversations.history({
                 channel: channelId,
-                limit: this.BATCH_SIZE
+                limit: slack_1.SLACK_BATCH_SIZE
             });
-            if (!result.messages) {
+            if (!result.ok || !result.messages) {
+                slackUtils_1.SlackLogger.warn(`Failed to fetch messages from channel ${channelId}: ${result.error}`);
                 return [];
             }
+            const channelInfo = await this.getChannelInfo(channelId);
             const tasks = [];
-            const channel = await this.getChannelInfo(channelId);
             for (const message of result.messages.slice(0, limit)) {
-                if (this.isTaskMessage(message)) {
-                    // Get thread replies for additional context
-                    if (message.thread_ts && message.thread_ts !== message.ts) {
-                        try {
-                            const replies = await this.client.conversations.replies({
-                                channel: channelId,
-                                ts: message.thread_ts,
-                                limit: 5
-                            });
-                            message.thread_replies = replies.messages?.slice(1) || []; // Exclude parent message
-                        }
-                        catch (error) {
-                            console.error('Error fetching thread replies:', error);
-                        }
-                    }
-                    const ticketData = { ...message, channel };
-                    tasks.push(this.mapToRecentTicket(ticketData));
+                const analysis = slackUtils_1.SlackTaskAnalyzer.analyzeMessage(message);
+                if (analysis.isTask) {
+                    // Enhance message with thread replies if available
+                    const enhancedMessage = await this.enhanceMessageWithThread(message, channelId);
+                    const ticket = this.convertSlackMessageToTicket(enhancedMessage, channelInfo);
+                    tasks.push(ticket);
+                    slackUtils_1.SlackLogger.debug(`Identified task: ${ticket.key} (confidence: ${analysis.confidence})`);
                 }
             }
-            return tasks;
+            return tasks.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
         }
         catch (error) {
-            console.error(`Error fetching tasks from channel ${channelId}:`, error);
+            slackUtils_1.SlackLogger.error(`Error fetching tasks from channel ${channelId}:`, error);
             return [];
         }
     }
+    /**
+     * Processes search results and converts valid tasks to tickets
+     * @private
+     */
+    async processSearchResults(matches) {
+        const tasks = [];
+        for (const match of matches) {
+            try {
+                const analysis = slackUtils_1.SlackTaskAnalyzer.analyzeMessage(match);
+                if (analysis.isTask) {
+                    const channelId = match.channel?.id || '';
+                    const channelInfo = await this.getChannelInfo(channelId);
+                    const ticket = this.convertSlackMessageToTicket(match, channelInfo);
+                    tasks.push(ticket);
+                }
+            }
+            catch (error) {
+                slackUtils_1.SlackLogger.warn('Error processing search result:', error);
+            }
+        }
+        return tasks.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    }
+    /**
+     * Enhances a message with thread replies for better context
+     * @private
+     */
+    async enhanceMessageWithThread(message, channelId) {
+        if (!message.thread_ts || message.thread_ts === message.ts) {
+            return message;
+        }
+        try {
+            const replies = await this.client.conversations.replies({
+                channel: channelId,
+                ts: message.thread_ts,
+                limit: slack_1.DEFAULT_THREAD_REPLIES_LIMIT
+            });
+            if (replies.ok && replies.messages) {
+                return {
+                    ...message,
+                    thread_replies: replies.messages.slice(1) // Exclude parent message
+                };
+            }
+        }
+        catch (error) {
+            slackUtils_1.SlackLogger.warn('Error fetching thread replies:', error);
+        }
+        return message;
+    }
+    /**
+     * Retrieves channel information with caching
+     * @private
+     */
     async getChannelInfo(channelId) {
+        if (!channelId) {
+            return { id: 'unknown', name: 'unknown', is_private: false, is_archived: false };
+        }
         const cacheKey = `channel-${channelId}`;
         return this.getCachedData(cacheKey, async () => {
             try {
-                const result = await this.client.conversations.info({
-                    channel: channelId
-                });
-                return result.channel || { id: channelId, name: 'unknown' };
+                const result = await this.client.conversations.info({ channel: channelId });
+                if (result.ok && result.channel) {
+                    return result.channel;
+                }
             }
             catch (error) {
-                return { id: channelId, name: 'unknown' };
+                slackUtils_1.SlackLogger.warn(`Error fetching channel info for ${channelId}:`, error);
             }
+            return {
+                id: channelId,
+                name: 'unknown',
+                is_private: false,
+                is_archived: false
+            };
         });
     }
-    isTaskMessage(message) {
-        if (!message.text)
-            return false;
-        const text = message.text.toLowerCase();
-        // Skip bot messages unless they contain task keywords
-        if (message.bot_id && !this.containsTaskKeywords(text)) {
-            return false;
-        }
-        // Must contain task-related keywords or indicators
-        return this.containsTaskKeywords(text) ||
-            this.hasTaskReactions(message) ||
-            this.hasTaskFormat(text);
-    }
-    containsTaskKeywords(text) {
-        const taskKeywords = [
-            'todo', 'task', 'bug', 'feature', 'issue', 'fix', 'implement',
-            'urgent', 'priority', 'deadline', 'assigned', 'complete', 'done',
-            'need to', 'should', 'must', 'requirement', 'story', 'epic'
-        ];
-        return taskKeywords.some(keyword => text.includes(keyword));
-    }
-    hasTaskReactions(message) {
-        if (!message.reactions)
-            return false;
-        const taskReactions = [
-            'white_check_mark', 'heavy_check_mark', 'x', 'hourglass_flowing_sand',
-            'red_circle', 'yellow_circle', 'green_circle', 'eyes', 'raising_hand'
-        ];
-        return message.reactions.some((reaction) => taskReactions.includes(reaction.name));
-    }
-    hasTaskFormat(text) {
-        // Check for common task formats
-        return /^[-*+]\s/.test(text) || // Bullet points
-            /^\d+\.\s/.test(text) || // Numbered lists
-            /\[[\sx]\]/i.test(text) || // Checkboxes
-            /^(TODO|FIXME|NOTE|HACK):/.test(text.toUpperCase()); // Code comments
-    }
-    extractPriority(message) {
-        const text = message.text?.toLowerCase() || '';
-        // Check emojis and keywords for priority
-        if (text.includes('🔥') || text.includes('urgent') || text.includes('critical') || text.includes('emergency')) {
-            return 'urgent';
-        }
-        if (text.includes('⚡') || text.includes('high priority') || text.includes('important') || text.includes('asap')) {
-            return 'high';
-        }
-        if (text.includes('low priority') || text.includes('nice to have') || text.includes('when time permits')) {
-            return 'low';
-        }
-        // Check reactions for priority indicators
-        if (message.reactions) {
-            for (const reaction of message.reactions) {
-                if (['fire', 'rotating_light', 'warning'].includes(reaction.name)) {
-                    return 'urgent';
-                }
-                if (['zap', 'exclamation'].includes(reaction.name)) {
-                    return 'high';
-                }
-            }
-        }
-        return 'medium';
-    }
-    extractStatus(message) {
-        const reactions = message.reactions || [];
-        // Status mapping from reactions
-        const statusMap = {
-            'white_check_mark': 'completed',
-            'heavy_check_mark': 'completed',
-            'x': 'cancelled',
-            'hourglass_flowing_sand': 'in_progress',
-            'red_circle': 'blocked',
-            'yellow_circle': 'waiting',
-            'green_circle': 'ready',
-            'eyes': 'in_review',
-            'raising_hand': 'assigned'
-        };
-        for (const reaction of reactions) {
-            if (statusMap[reaction.name]) {
-                return statusMap[reaction.name];
-            }
-        }
-        // Check text for status keywords
-        const text = message.text?.toLowerCase() || '';
-        if (text.includes('completed') || text.includes('done') || text.includes('finished')) {
-            return 'completed';
-        }
-        if (text.includes('in progress') || text.includes('working on') || text.includes('started')) {
-            return 'in_progress';
-        }
-        if (text.includes('blocked') || text.includes('stuck') || text.includes('waiting for')) {
-            return 'blocked';
-        }
-        return 'open';
-    }
-    extractAssignee(message) {
-        const text = message.text || '';
-        // Look for @mentions (assignee patterns)
-        const mentionPattern = /<@([UW][A-Z0-9]+)>/g;
-        const mentions = [...text.matchAll(mentionPattern)];
-        if (mentions.length > 0) {
-            // Return the first mention (could be enhanced to get display name)
-            return mentions[0][1];
-        }
-        // Look for assignee patterns in text
-        const assigneePatterns = [
-            /assigned to (@?\w+)/i,
-            /assignee:?\s*(@?\w+)/i,
-            /@(\w+)\s+(please|can you|could you)/i
-        ];
-        for (const pattern of assigneePatterns) {
-            const match = text.match(pattern);
-            if (match) {
-                return match[1].replace('@', '');
-            }
-        }
-        return undefined;
-    }
-    extractLabels(message, channel) {
-        const labels = [];
-        const text = message.text || '';
-        // Add channel name as a label
-        if (channel?.name) {
-            labels.push(`#${channel.name}`);
-        }
-        // Extract hashtags
-        const hashtagPattern = /#(\w+)/g;
-        const hashtags = [...text.matchAll(hashtagPattern)];
-        labels.push(...hashtags.map(match => match[1]));
-        // Extract common labels from reactions
-        if (message.reactions) {
-            const labelReactions = ['bug', 'enhancement', 'question', 'documentation'];
-            for (const reaction of message.reactions) {
-                if (labelReactions.includes(reaction.name)) {
-                    labels.push(reaction.name);
-                }
-            }
-        }
-        return [...new Set(labels)]; // Remove duplicates
-    }
-    extractSummary(text) {
-        if (!text)
-            return 'No summary available';
-        // Remove Slack formatting
-        let cleaned = text
-            .replace(/<@[UW][A-Z0-9]+>/g, '@user') // Replace user mentions
-            .replace(/<#C[A-Z0-9]+\|([^>]+)>/g, '#$1') // Replace channel mentions
-            .replace(/<[^>]+>/g, '') // Remove other formatting
-            .replace(/\n+/g, ' ') // Replace newlines with spaces
-            .trim();
-        // Take first sentence or first line, whichever is shorter
-        const firstLine = cleaned.split('\n')[0];
-        const firstSentence = cleaned.split('.')[0];
-        const summary = firstLine.length <= firstSentence.length ? firstLine : firstSentence;
-        // Truncate if too long
-        if (summary.length > 100) {
-            return summary.substring(0, 97) + '...';
-        }
-        return summary || 'No summary available';
-    }
-    getLastActivity(message) {
-        // Check thread replies for latest activity
-        if (message.thread_replies && message.thread_replies.length > 0) {
-            const lastReply = message.thread_replies[message.thread_replies.length - 1];
-            return new Date(parseFloat(lastReply.ts) * 1000);
-        }
-        // Check reactions for latest activity
-        if (message.reactions && message.reactions.length > 0) {
-            // Use message timestamp as proxy (reactions don't have timestamps)
-            return new Date(parseFloat(message.ts) * 1000);
-        }
-        return new Date(parseFloat(message.ts) * 1000);
-    }
-    mapToRecentTicket(rawTicket) {
-        // For compatibility with base class, we need to handle both formats
-        if (rawTicket.channel) {
-            // This is already processed
-            return this.mapSlackMessageToTicket(rawTicket, rawTicket.channel);
-        }
-        else {
-            // Fallback for base class compatibility
-            return this.mapSlackMessageToTicket(rawTicket, { id: 'unknown', name: 'unknown' });
-        }
-    }
-    mapSlackMessageToTicket(message, channel) {
-        const timestamp = parseFloat(message.ts);
+    /**
+     * Converts a Slack message to a RecentTicket
+     * @private
+     */
+    convertSlackMessageToTicket(message, channel) {
+        const analysis = slackUtils_1.SlackTaskAnalyzer.analyzeMessage(message);
         const messageId = message.ts.replace('.', '');
         return {
             id: message.ts,
             key: `SLACK-${channel.name || 'DM'}-${messageId}`,
-            summary: this.extractSummary(message.text),
-            description: this.cleanMessageText(message.text),
+            summary: slackUtils_1.SlackTextProcessor.extractSummary(message.text),
+            description: slackUtils_1.SlackTextProcessor.cleanMessageText(message.text),
             provider: 'slack',
-            priority: this.extractPriority(message),
-            assignee: this.extractAssignee(message),
-            labels: this.extractLabels(message, channel),
-            createdAt: new Date(timestamp * 1000),
-            updatedAt: this.getLastActivity(message),
-            url: `slack://channel/${channel.id}/p${messageId}`,
-            status: this.extractStatus(message)
+            priority: analysis.metadata.priority || 'medium',
+            assignee: analysis.metadata.assignee,
+            labels: analysis.metadata.labels || [],
+            createdAt: slackUtils_1.SlackTimeUtils.timestampToDate(message.ts),
+            updatedAt: slackUtils_1.SlackTimeUtils.getLastActivityDate(message),
+            url: slackUtils_1.SlackUrlGenerator.generateMessageUrl(channel.id, message.ts),
+            status: analysis.metadata.status || 'open'
         };
     }
-    cleanMessageText(text) {
-        if (!text)
-            return '';
-        return text
-            .replace(/<@[UW][A-Z0-9]+>/g, '@user') // Replace user mentions
-            .replace(/<#C[A-Z0-9]+\|([^>]+)>/g, '#$1') // Replace channel mentions
-            .replace(/<([^|>]+)\|([^>]+)>/g, '$2') // Replace links with labels
-            .replace(/<([^>]+)>/g, '$1') // Replace remaining formatting
-            .replace(/\n\s*\n/g, '\n\n') // Clean up extra newlines
-            .trim();
-    }
-    // Caching system (same as JiraProvider)
-    async getCachedData(key, fetcher) {
-        const cached = this.messageCache.get(key);
-        if (cached && (Date.now() - cached.timestamp) < this.CACHE_DURATION) {
-            return cached.data;
+    // =================== BASE CLASS IMPLEMENTATION ===================
+    /**
+     * Maps raw ticket data to RecentTicket format (required by base class)
+     * @protected
+     */
+    mapToRecentTicket(rawTicket) {
+        // Handle enhanced ticket data with channel info
+        if (rawTicket.channel) {
+            return this.convertSlackMessageToTicket(rawTicket, rawTicket.channel);
         }
-        const data = await fetcher();
-        this.messageCache.set(key, { data, timestamp: Date.now() });
-        return data;
+        // Fallback for base class compatibility
+        return this.convertSlackMessageToTicket(rawTicket, {
+            id: 'unknown',
+            name: 'unknown',
+            is_private: false,
+            is_archived: false
+        });
     }
-    // Clear cache (useful for refresh operations)
-    clearCache() {
-        this.messageCache.clear();
+    /**
+     * Override makeRequest to prevent usage (we use WebClient directly)
+     * @protected
+     */
+    async makeRequest(_url, _options = {}) {
+        throw new Error('Use Slack WebClient directly instead of makeRequest');
     }
-    // Get cache stats (for debugging)
-    getCacheStats() {
-        return {
-            size: this.messageCache.size,
-            keys: Array.from(this.messageCache.keys())
-        };
-    }
+    /**
+     * Returns authentication headers (not used with WebClient)
+     * @protected
+     */
     getAuthHeaders() {
         return {
             'Authorization': `Bearer ${this.config.token}`,
             'Content-Type': 'application/json; charset=utf-8'
         };
     }
-    // Override makeRequest to use Slack Web API client instead of axios
-    async makeRequest(url, options = {}) {
-        // This method is not used in SlackProvider as we use the WebClient directly
-        throw new Error('Use Slack WebClient directly instead of makeRequest');
+    // =================== CACHE MANAGEMENT ===================
+    /**
+     * Retrieves data from cache or fetches new data
+     * @private
+     */
+    async getCachedData(key, fetcher) {
+        const cached = this.messageCache.get(key);
+        if (cached && (Date.now() - cached.timestamp) < slack_1.SLACK_CACHE_DURATION) {
+            slackUtils_1.SlackLogger.debug(`Cache hit for key: ${key}`);
+            return cached.data;
+        }
+        slackUtils_1.SlackLogger.debug(`Cache miss for key: ${key}, fetching fresh data`);
+        try {
+            const data = await fetcher();
+            this.messageCache.set(key, {
+                data,
+                timestamp: Date.now()
+            });
+            return data;
+        }
+        catch (error) {
+            slackUtils_1.SlackLogger.error(`Error fetching data for cache key ${key}:`, error);
+            throw error;
+        }
+    }
+    /**
+     * Clears all cached data
+     */
+    clearCache() {
+        const size = this.messageCache.size;
+        this.messageCache.clear();
+        slackUtils_1.SlackLogger.info(`Cleared cache (${size} entries)`);
+    }
+    /**
+     * Returns cache statistics for debugging
+     */
+    getCacheStats() {
+        return {
+            size: this.messageCache.size,
+            keys: Array.from(this.messageCache.keys())
+        };
     }
 }
 exports.SlackProvider = SlackProvider;

@@ -40,10 +40,16 @@ const recentTicketsPicker_1 = require("./ui/recentTicketsPicker");
 const planGenerator_1 = require("./ui/planGenerator");
 const context_1 = require("./context");
 const settingsPanel_1 = require("./ui/settingsPanel");
+const configurationPanel_1 = require("./ui/configurationPanel");
 const feedbackSystem_1 = require("./ui/feedbackSystem");
 const errorHandler_1 = require("./ui/errorHandler");
+const dotenv_loader_1 = require("./config/dotenv-loader");
+const environment_1 = require("./config/environment");
 function activate(context) {
     console.log('AI Plan extension is now active!');
+    // Load environment variables from .env file
+    (0, dotenv_loader_1.loadDotenv)(context.extensionPath);
+    console.log('Environment configuration:', (0, environment_1.getMaskedConfig)());
     (0, context_1.setExtensionContext)(context);
     // Register the main command with enhanced UI
     const disposable = vscode.commands.registerCommand('ai-plan.generateFromRecent', async () => {
@@ -110,6 +116,18 @@ function activate(context) {
         }
     });
     context.subscriptions.push(settingsDisposable);
+    // Register new configuration panel command
+    const configPanelDisposable = vscode.commands.registerCommand('ai-plan.openConfiguration', async () => {
+        try {
+            feedbackSystem_1.feedbackSystem.showStatusBarMessage('$(gear) Opening configuration...', 'info');
+            const configPanel = new configurationPanel_1.ConfigurationPanel(context);
+            await configPanel.show();
+        }
+        catch (error) {
+            await errorHandler_1.errorHandler.handleError(error instanceof Error ? error : new Error(String(error)), 'configuration_open');
+        }
+    });
+    context.subscriptions.push(configPanelDisposable);
     // Register status command
     const statusDisposable = vscode.commands.registerCommand('ai-plan.showStatus', async () => {
         await feedbackSystem_1.feedbackSystem.showSuccess('AI Plan extension is active and ready!', {
@@ -125,6 +143,12 @@ function activate(context) {
                     label: 'Open Settings',
                     action: async () => {
                         await vscode.commands.executeCommand('ai-plan.settings');
+                    }
+                },
+                {
+                    label: 'Configure Extension',
+                    action: async () => {
+                        await vscode.commands.executeCommand('ai-plan.openConfiguration');
                     }
                 },
                 {
@@ -191,9 +215,9 @@ async function configureJira(context) {
 }
 async function configureSlack(context) {
     const token = await vscode.window.showInputBox({
-        prompt: 'Enter your Slack Bot Token (xoxb-...)',
+        prompt: 'Enter your Slack Bot Token',
         password: true,
-        placeHolder: 'xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx',
+        placeHolder: 'Bot token from Slack API dashboard',
         validateInput: (value) => {
             if (!value) {
                 return 'Token is required';

@@ -36,27 +36,56 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.RecentTicketsPicker = void 0;
 const vscode = __importStar(require("vscode"));
 const context_1 = require("../context");
-const jira_1 = require("../providers/jira");
-const slack_1 = require("../providers/slack");
 const feedbackSystem_1 = require("./feedbackSystem");
+const errorHandler_1 = require("./errorHandler");
+const provider_factory_1 = require("../config/provider-factory");
+const errorTypes_1 = require("../utils/errorTypes");
 class RecentTicketsPicker {
     constructor() {
         this.providers = [];
-        this.jiraProvider = null;
-        this.slackProvider = null;
-        // Initialize providers (Jira and Slack)
+        // Initialize providers using the factory
         this.initializeProviders();
     }
     async initializeProviders() {
-        const jiraConfig = await this.getJiraConfig();
-        if (jiraConfig) {
-            this.jiraProvider = new jira_1.JiraProvider(jiraConfig);
-            this.providers.push(this.jiraProvider);
+        try {
+            const availableProviders = (0, provider_factory_1.getAvailableProviders)();
+            if (availableProviders.length === 0) {
+                await feedbackSystem_1.feedbackSystem.showWarning('No providers configured. Please configure at least one service (Jira, Linear, Slack, or GitHub).', {
+                    title: 'Configuration Required',
+                    actions: [
+                        {
+                            label: 'Configure Services',
+                            action: async () => {
+                                await vscode.commands.executeCommand('ai-plan.configure');
+                            }
+                        }
+                    ]
+                });
+                return;
+            }
+            // Create providers using the factory
+            for (const providerName of availableProviders) {
+                try {
+                    const provider = (0, provider_factory_1.createProvider)(providerName);
+                    this.providers.push(provider);
+                    console.log(`Initialized ${providerName} provider`);
+                }
+                catch (error) {
+                    const extensionError = error instanceof errorTypes_1.ExtensionError
+                        ? error
+                        : errorTypes_1.ErrorFactory.invalidConfig('RecentTicketsPicker', `Failed to initialize ${providerName}: ${error.message}`);
+                    await errorHandler_1.errorHandler.handleExtensionError(extensionError);
+                }
+            }
+            if (this.providers.length === 0) {
+                throw errorTypes_1.ErrorFactory.invalidConfig('RecentTicketsPicker', 'No providers could be initialized. Check your configuration.');
+            }
         }
-        const slackConfig = await this.getSlackConfig();
-        if (slackConfig) {
-            this.slackProvider = new slack_1.SlackProvider(slackConfig);
-            this.providers.push(this.slackProvider);
+        catch (error) {
+            const extensionError = error instanceof errorTypes_1.ExtensionError
+                ? error
+                : errorTypes_1.ErrorFactory.invalidConfig('RecentTicketsPicker', `Provider initialization failed: ${error.message}`);
+            await errorHandler_1.errorHandler.handleExtensionError(extensionError);
         }
     }
     async getJiraConfig() {
@@ -84,18 +113,24 @@ class RecentTicketsPicker {
     }
     async showRecentTickets() {
         try {
-            // Use enhanced UI flow
+            // Ensure providers are initialized
+            await this.initializeProviders();
+            if (this.providers.length === 0) {
+                return null; // User will have been shown configuration prompt
+            }
             return await this.showEnhancedTaskSelection();
         }
         catch (error) {
-            console.error('Error in showRecentTickets:', error);
-            // Fallback to legacy flow
-            return await this.showLegacyTaskSelection();
+            const extensionError = error instanceof errorTypes_1.ExtensionError
+                ? error
+                : errorTypes_1.ErrorFactory.invalidConfig('RecentTicketsPicker', `Task selection failed: ${error.message}`);
+            await errorHandler_1.errorHandler.handleExtensionError(extensionError);
+            return null;
         }
     }
     async showEnhancedTaskSelection() {
-        if (!this.jiraProvider && !this.slackProvider) {
-            throw new Error('No providers initialized. Please configure Jira or Slack.');
+        if (this.providers.length === 0) {
+            throw errorTypes_1.ErrorFactory.invalidConfig('RecentTicketsPicker', 'No providers available for task selection');
         }
         return await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -237,34 +272,40 @@ class RecentTicketsPicker {
                     case 'show_group':
                         if (selectedItem.group) {
                             const task = await this.showTaskGroup(selectedItem.group);
-                            if (task)
+                            if (task) {
                                 return task;
+                            }
                         }
                         continue;
                     case 'browse_projects':
                         const projectTask = await this.showProjectBrowser();
-                        if (projectTask)
+                        if (projectTask) {
                             return projectTask;
+                        }
                         continue;
                     case 'sprint_tasks':
                         const sprintTask = await this.showSprintTasks();
-                        if (sprintTask)
+                        if (sprintTask) {
                             return sprintTask;
+                        }
                         continue;
                     case 'all_tasks':
                         const allTask = await this.showAllTasks();
-                        if (allTask)
+                        if (allTask) {
                             return allTask;
+                        }
                         continue;
                     case 'recent_updated':
                         const recentTask = await this.showRecentlyUpdated();
-                        if (recentTask)
+                        if (recentTask) {
                             return recentTask;
+                        }
                         continue;
                     case 'search':
                         const searchTask = await this.showTaskSearch();
-                        if (searchTask)
+                        if (searchTask) {
                             return searchTask;
+                        }
                         continue;
                     case 'refresh':
                         if (this.jiraProvider) {
@@ -277,18 +318,21 @@ class RecentTicketsPicker {
                         continue;
                     case 'slack_channels':
                         const slackChannelTask = await this.showSlackChannels();
-                        if (slackChannelTask)
+                        if (slackChannelTask) {
                             return slackChannelTask;
+                        }
                         continue;
                     case 'slack_mentions':
                         const slackMentionTask = await this.showSlackMentions();
-                        if (slackMentionTask)
+                        if (slackMentionTask) {
                             return slackMentionTask;
+                        }
                         continue;
                     case 'slack_high_priority':
                         const slackHighPriorityTask = await this.showSlackHighPriority();
-                        if (slackHighPriorityTask)
+                        if (slackHighPriorityTask) {
                             return slackHighPriorityTask;
+                        }
                         continue;
                     case 'settings':
                         await vscode.commands.executeCommand('ai-plan.settings');
@@ -311,8 +355,9 @@ class RecentTicketsPicker {
                         const recent = await provider.getRecentTickets(limit);
                         const merged = [...assigned, ...recent];
                         const dedup = new Map();
-                        for (const t of merged)
+                        for (const t of merged) {
                             dedup.set(t.id, t);
+                        }
                         allTickets.push(...dedup.values());
                     }
                     catch (error) {
@@ -466,8 +511,9 @@ class RecentTicketsPicker {
                         matchOnDescription: true,
                         matchOnDetail: true
                     });
-                    if (picked?.ticket)
+                    if (picked?.ticket) {
                         return picked.ticket;
+                    }
                     continue;
                 }
                 // Optional: Browse boards assigned to you
@@ -482,8 +528,9 @@ class RecentTicketsPicker {
                                 continue;
                             }
                             const boardPick = await vscode.window.showQuickPick(boards.map((b) => ({ label: `${b.name}`, description: b.type ? `${b.type}` : undefined, boardId: b.id })), { placeHolder: 'Select a board...' });
-                            if (!boardPick)
+                            if (!boardPick) {
                                 continue;
+                            }
                             const issues = await getBoardIssuesAssignedToMe.call(provider, boardPick.boardId, 50);
                             if (!issues || issues.length === 0) {
                                 await vscode.window.showWarningMessage('No issues assigned to you on this board.');
@@ -500,8 +547,9 @@ class RecentTicketsPicker {
                                 matchOnDescription: true,
                                 matchOnDetail: true
                             });
-                            if (picked?.ticket)
+                            if (picked?.ticket) {
                                 return picked.ticket;
+                            }
                         }
                     }
                     continue;
@@ -539,16 +587,21 @@ class RecentTicketsPicker {
     }
     getStatusEmoji(status) {
         const statusLower = status.toLowerCase();
-        if (statusLower.includes('progress') || statusLower.includes('doing'))
+        if (statusLower.includes('progress') || statusLower.includes('doing')) {
             return '⚡';
-        if (statusLower.includes('done') || statusLower.includes('closed'))
+        }
+        if (statusLower.includes('done') || statusLower.includes('closed')) {
             return '✅';
-        if (statusLower.includes('review'))
+        }
+        if (statusLower.includes('review')) {
             return '👀';
-        if (statusLower.includes('blocked'))
+        }
+        if (statusLower.includes('blocked')) {
             return '🚫';
-        if (statusLower.includes('todo') || statusLower.includes('open') || statusLower.includes('new'))
+        }
+        if (statusLower.includes('todo') || statusLower.includes('open') || statusLower.includes('new')) {
             return '📝';
+        }
         return '📋';
     }
     getProviderEmoji(provider) {
@@ -561,12 +614,14 @@ class RecentTicketsPicker {
         return providerMap[provider.toLowerCase()] || '🔗';
     }
     truncateDescription(description, maxLength = 120) {
-        if (!description)
+        if (!description) {
             return 'No description available';
+        }
         const cleaned = description.replace(/\s+/g, ' ').trim();
-        if (cleaned.length <= maxLength)
+        if (cleaned.length <= maxLength) {
             return cleaned;
-        return cleaned.substring(0, maxLength - 3) + '...';
+        }
+        return `${cleaned.substring(0, maxLength - 3)}...`;
     }
     formatTimeAgo(date) {
         const now = new Date();
@@ -622,8 +677,9 @@ ${ticket.description}
         return selected?.task || null;
     }
     async showProjectBrowser() {
-        if (!this.jiraProvider)
+        if (!this.jiraProvider) {
             return null;
+        }
         const projects = await this.jiraProvider.getTasksByProject();
         if (projects.length === 0) {
             await vscode.window.showInformationMessage('No projects with assigned tasks found.');
@@ -640,8 +696,9 @@ ${ticket.description}
             placeHolder: 'Choose a project to view your assigned tasks...',
             matchOnDescription: true
         });
-        if (!selectedProject)
+        if (!selectedProject) {
             return null;
+        }
         // Show tasks from selected project
         const taskItems = selectedProject.project.tasks.map(task => ({
             label: `${this.getPriorityEmoji(task.priority)} ${task.key} • ${task.summary}`,
@@ -658,8 +715,9 @@ ${ticket.description}
         return selectedTask?.task || null;
     }
     async showSprintTasks() {
-        if (!this.jiraProvider)
+        if (!this.jiraProvider) {
             return null;
+        }
         try {
             const sprintTasks = await this.jiraProvider.getCurrentSprintTasks();
             if (sprintTasks.length === 0) {
@@ -686,8 +744,9 @@ ${ticket.description}
         }
     }
     async showAllTasks() {
-        if (!this.jiraProvider)
+        if (!this.jiraProvider) {
             return null;
+        }
         try {
             const tasks = await this.jiraProvider.getRecentTickets(100);
             if (tasks.length === 0) {
@@ -714,8 +773,9 @@ ${ticket.description}
         }
     }
     async showRecentlyUpdated() {
-        if (!this.jiraProvider)
+        if (!this.jiraProvider) {
             return null;
+        }
         try {
             const recentTasks = await this.jiraProvider.getRecentlyUpdatedTasks(7, 50);
             if (recentTasks.length === 0) {
@@ -768,8 +828,9 @@ ${ticket.description}
             title: '🔍 Search & Filter Options',
             placeHolder: 'How would you like to find your task?'
         });
-        if (!selectedOption || !this.jiraProvider)
+        if (!selectedOption || !this.jiraProvider) {
             return null;
+        }
         try {
             switch (selectedOption.action) {
                 case 'search_key':
@@ -795,8 +856,9 @@ ${ticket.description}
             placeHolder: 'PROJ-123',
             title: '🔍 Search by Key'
         });
-        if (!key || !this.jiraProvider)
+        if (!key || !this.jiraProvider) {
             return null;
+        }
         try {
             const ticket = await this.jiraProvider.getTicket(key.trim().toUpperCase());
             return ticket;
@@ -812,8 +874,9 @@ ${ticket.description}
             placeHolder: 'e.g., login bug, API endpoint, user interface',
             title: '📝 Search by Text'
         });
-        if (!searchText || !this.jiraProvider)
+        if (!searchText || !this.jiraProvider) {
             return null;
+        }
         try {
             const results = await this.jiraProvider.searchByText(searchText, 20);
             if (results.length === 0) {
@@ -840,8 +903,9 @@ ${ticket.description}
         }
     }
     async showHighPriorityTasks() {
-        if (!this.jiraProvider)
+        if (!this.jiraProvider) {
             return null;
+        }
         try {
             const urgentTasks = await this.jiraProvider.getUrgentTasks(30);
             if (urgentTasks.length === 0) {
@@ -868,8 +932,9 @@ ${ticket.description}
         }
     }
     async showDueSoonTasks() {
-        if (!this.jiraProvider)
+        if (!this.jiraProvider) {
             return null;
+        }
         try {
             const dueTasks = await this.jiraProvider.getTasksDueSoon(7, 30);
             if (dueTasks.length === 0) {
@@ -897,8 +962,9 @@ ${ticket.description}
     }
     // =================== SLACK-SPECIFIC METHODS ===================
     async showSlackChannels() {
-        if (!this.slackProvider)
+        if (!this.slackProvider) {
             return null;
+        }
         try {
             const taskChannels = await this.slackProvider.getTaskChannels();
             if (taskChannels.length === 0) {
@@ -915,7 +981,7 @@ ${ticket.description}
                         channelItems.push({
                             label: `💬 #${channelName}`,
                             description: `${tasks.length} tasks found`,
-                            detail: `Recent task discussions from this channel`,
+                            detail: 'Recent task discussions from this channel',
                             channelId,
                             tasks
                         });
@@ -930,8 +996,9 @@ ${ticket.description}
                 placeHolder: 'Choose a channel to view tasks from...',
                 matchOnDescription: true
             });
-            if (!selectedChannel)
+            if (!selectedChannel) {
                 return null;
+            }
             // Show tasks from selected channel
             const taskItems = selectedChannel.tasks.map(task => ({
                 label: `${this.getPriorityEmoji(task.priority)} ${task.summary}`,
@@ -953,8 +1020,9 @@ ${ticket.description}
         }
     }
     async showSlackMentions() {
-        if (!this.slackProvider)
+        if (!this.slackProvider) {
             return null;
+        }
         try {
             const mentions = await this.slackProvider.getMyTaskMentions(7, 30);
             if (mentions.length === 0) {
@@ -981,8 +1049,9 @@ ${ticket.description}
         }
     }
     async showSlackHighPriority() {
-        if (!this.slackProvider)
+        if (!this.slackProvider) {
             return null;
+        }
         try {
             const highPriorityTasks = await this.slackProvider.getHighPriorityTasks(20);
             if (highPriorityTasks.length === 0) {
